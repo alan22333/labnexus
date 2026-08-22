@@ -22,11 +22,19 @@ var (
 type Service struct {
 	spaces  Repository
 	folders FolderRepository
+	// docCounter 统计目录下文档数(F3 引入;nil = 不检查文档占用)
+	docCounter func(ctx context.Context, folderID string) (int64, error)
 }
 
 // NewService 构造函数(依赖注入)
 func NewService(spaces Repository, folders FolderRepository) *Service {
 	return &Service{spaces: spaces, folders: folders}
+}
+
+// WithDocCounter 注入文档计数函数(目录删除时校验文档占用)。
+func (s *Service) WithDocCounter(fn func(ctx context.Context, folderID string) (int64, error)) *Service {
+	s.docCounter = fn
+	return s
 }
 
 // FolderNode 树形目录节点(嵌套 children)
@@ -99,7 +107,7 @@ func (s *Service) UpdateFolder(ctx context.Context, userID, folderID string, nam
 	return f, nil
 }
 
-// DeleteFolder 删除目录(仅空目录,有子目录返回冲突)。
+// DeleteFolder 删除目录(仅空目录:无子目录且无文档)。
 func (s *Service) DeleteFolder(ctx context.Context, userID, folderID string) error {
 	sp, err := s.spaceOf(ctx, userID)
 	if err != nil {
@@ -109,12 +117,21 @@ func (s *Service) DeleteFolder(ctx context.Context, userID, folderID string) err
 	if err != nil {
 		return err
 	}
-	n, err := s.folders.CountChildren(ctx, f.ID)
+	children, err := s.folders.CountChildren(ctx, f.ID)
 	if err != nil {
 		return err
 	}
-	if n > 0 {
+	if children > 0 {
 		return ErrFolderNotEmpty
+	}
+	if s.docCounter != nil {
+		docs, err := s.docCounter(ctx, f.ID)
+		if err != nil {
+			return err
+		}
+		if docs > 0 {
+			return ErrFolderNotEmpty
+		}
 	}
 	return s.folders.Delete(ctx, f.ID)
 }

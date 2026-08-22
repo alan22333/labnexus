@@ -54,6 +54,16 @@ func (r *memUserRepo) GetByUsername(_ context.Context, username string) (*user.U
 	return u, nil
 }
 
+func (r *memUserRepo) GetByIDs(_ context.Context, ids []string) ([]*user.User, error) {
+	out := make([]*user.User, 0, len(ids))
+	for _, id := range ids {
+		if u, ok := r.byID[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func (r *memUserRepo) Update(_ context.Context, u *user.User) error {
 	if _, ok := r.byID[u.ID]; !ok {
 		return user.ErrNotFound

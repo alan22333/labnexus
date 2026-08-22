@@ -11,7 +11,9 @@ import (
 	"labnexus/internal/cache"
 	"labnexus/internal/config"
 	"labnexus/internal/database"
+	"labnexus/internal/document"
 	"labnexus/internal/space"
+	"labnexus/internal/tag"
 	"labnexus/internal/user"
 )
 
@@ -26,7 +28,12 @@ func main() {
 	}
 
 	// 开发期 AutoMigrate;正式部署前切换 goose 版本化迁移(schema 权威定义 docs/schema.sql)
-	if err := db.AutoMigrate(&user.User{}, &user.InviteCode{}, &space.Space{}, &space.Folder{}); err != nil {
+	if err := db.AutoMigrate(
+		&user.User{}, &user.InviteCode{},
+		&space.Space{}, &space.Folder{},
+		&document.Document{}, &document.DocumentTag{}, &document.Comment{}, &document.Reaction{},
+		&tag.Tag{},
+	); err != nil {
 		slog.Error("auto migrate failed", "error", err)
 		os.Exit(1)
 	}
@@ -41,8 +48,19 @@ func main() {
 	authSvc := auth.NewService(users, invites, spaces, store, cfg).
 		WithTxRunner(database.GormTxRunner(db))
 	authHandler := auth.NewHandler(authSvc)
-	spaceSvc := space.NewService(spaces, folders)
+	spaceSvc := space.NewService(spaces, folders).
+		WithDocCounter(document.NewGormRepository(db).CountByFolder)
 	spaceHandler := space.NewHandler(spaceSvc)
+	tagRepo := tag.NewGormRepository(db)
+	tagSvc := tag.NewService(tagRepo)
+	tagHandler := tag.NewHandler(tagSvc)
+	docSvc := document.NewService(
+		document.NewGormRepository(db),
+		document.NewGormCommentRepository(db),
+		document.NewGormReactionRepository(db),
+		tagRepo, users, spaces, folders,
+	).WithTxRunner(database.GormTxRunner(db))
+	docHandler := document.NewHandler(docSvc)
 
 	r := gin.Default()
 
@@ -67,7 +85,11 @@ func main() {
 	// F2 个人空间与目录(契约 docs/api-contract.md §F2)
 	spaceHandler.RegisterRoutes(r, cfg.JWTSecret)
 
-	// TODO(阶段 1):F3 文档 / F4 信息流 / F5 标签 / F6 搜索
+	// F3 文档 + F4 信息流 + F5 标签(契约 docs/api-contract.md §F3/§F4/§F5)
+	docHandler.RegisterRoutes(r, cfg.JWTSecret)
+	tagHandler.RegisterRoutes(r, cfg.JWTSecret)
+
+	// TODO(阶段 1):F6 搜索
 
 	slog.Info("server started", "addr", ":"+cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {

@@ -85,6 +85,7 @@ type Repository interface {
 	Create(ctx context.Context, u *User) error
 	GetByID(ctx context.Context, id string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
+	GetByIDs(ctx context.Context, ids []string) ([]*User, error)
 	Update(ctx context.Context, u *User) error
 }
 
@@ -123,6 +124,16 @@ func (r *GormRepository) GetByUsername(ctx context.Context, username string) (*U
 		return nil, err
 	}
 	return &u, nil
+}
+
+func (r *GormRepository) GetByIDs(ctx context.Context, ids []string) ([]*User, error) {
+	if len(ids) == 0 {
+		return []*User{}, nil
+	}
+	var users []*User
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Where("id IN ?", ids).Find(&users).Error
+	return users, err
 }
 
 func (r *GormRepository) Update(ctx context.Context, u *User) error {
