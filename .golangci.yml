@@ -1,0 +1,18 @@
+# golangci-lint 配置(规范依据:docs/standards.md §4、§8)
+# 本地安装:golangci-lint(已置于 .gobin/)
+
+linters:
+  # 默认启用集合(errcheck/govet/ineffassign/staticcheck/unused/gosimple)之外再启用:
+  enable:
+    - misspell      # 拼写检查
+    - whitespace    # 空白/缩进一致性
+    - gocritic      # 常见代码质量问题
+  disable:
+    - exhaustruct   # 过度强制,不适用本项目
+
+issues:
+  # 测试文件放行部分严格检查(测试追求可读性)
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocritic
