@@ -43,6 +43,7 @@ globalThis.fetch = async (url, opts = {}) => {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) { /* 非 JSON */ }
+  if (!res.ok || process.env.DBG) console.log('  [debug fetch]', opts.method || 'GET', url, '→', res.status, String(text).slice(0, 120));
   return { ok: res.ok, status: res.status, json: async () => data, text: async () => text };
 };
 
@@ -62,10 +63,12 @@ globalThis.FormData = class {
   constructor() { this.map = { invite_code: 'E2E-1', username: 'e2e_user', display_name: 'E2E', password: 'password123' }; }
   get(k) { return this.map[k]; }
   entries() { return Object.entries(this.map); }
+  [Symbol.iterator]() { return Object.entries(this.map)[Symbol.iterator](); }
 };
 try {
   await window.Auth.register(regForm);
-  check('注册并进入主界面', !document.getElementById('login-view').classList.contains('hidden'));
+  const me = await window.api('/me');
+  check('注册并验证 token 可用', me && me.user && me.user.username === 'e2e_user', JSON.stringify(me).slice(0, 120));
 } catch (e) { check('注册', false, e.message); }
 
 console.log('== 2. 信息流(先发一帖)==');
@@ -97,7 +100,8 @@ try {
 console.log('== 5. 资源库 ==');
 try {
   await window.Resources.render();
-  check('资源库渲染', lastHTML.includes('资源库'));
+  const listHTML = document.getElementById('res-list').innerHTML;
+  check('资源库渲染(空态文案)', listHTML.includes('暂无资源'), listHTML.slice(0, 120));
 } catch (e) { check('资源库', false, e.message); }
 
 console.log('== 6. 项目 ==');
