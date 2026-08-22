@@ -8,6 +8,11 @@
 up:
 	docker compose up -d
 
+# 暂停容器(保留容器与数据,快速重启:docker compose start)
+stop:
+	docker compose stop
+
+# 停止并移除容器(数据卷保留,下次 up 数据仍在)
 down:
 	docker compose down
 
