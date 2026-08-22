@@ -15,6 +15,7 @@ type Config struct {
 	DBName     string
 	RedisAddr  string
 	JWTSecret  string // 签名密钥(生产环境必须覆盖)
+	WebDir     string // 前端静态目录(相对运行目录)
 
 	AccessTokenTTL  time.Duration // access token 有效期(默认 15min)
 	RefreshTokenTTL time.Duration // refresh token 有效期(默认 30 天)
@@ -31,6 +32,7 @@ func Load() *Config {
 		DBName:     getenv("DB_NAME", "labnexus"),
 		RedisAddr:  getenv("REDIS_ADDR", "localhost:6380"), // 项目容器映射 6380
 		JWTSecret:  getenv("JWT_SECRET", "dev-secret-change-me"),
+		WebDir:     getenv("WEB_DIR", "web"),
 
 		AccessTokenTTL:  getenvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
 		RefreshTokenTTL: getenvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),

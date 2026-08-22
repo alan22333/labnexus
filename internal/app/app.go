@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -116,6 +117,19 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	tagHandler.RegisterRoutes(r, cfg.JWTSecret)
 	resHandler.RegisterRoutes(r, cfg.JWTSecret)
 	projectHandler.RegisterRoutes(r, cfg.JWTSecret)
+
+	// 前端外壳(阶段 1 验证:纯 HTML/JS,由后端托管)
+	// 用 NoRoute 提供静态文件,避免 catch-all 与 /api 路由冲突;
+	// 未注册的 /api/* 路径统一返回 JSON 404(契约 §通用约定)。
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{"code": "NOT_FOUND", "message": "not found"},
+			})
+			return
+		}
+		http.FileServer(http.Dir(cfg.WebDir)).ServeHTTP(c.Writer, c.Request)
+	})
 
 	return r, nil
 }

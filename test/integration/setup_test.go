@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,10 @@ var truncateTables = []string{
 func setupServer(t *testing.T) *gin.Engine {
 	t.Helper()
 	cfg := config.Load()
+	// 集成测试 CWD 为 test/integration;web 在项目根(绝对路径,http.Dir 拒绝 "..")
+	wd, _ := os.Getwd()
+	cfg.WebDir = filepath.Join(wd, "..", "..", "web")
+	t.Logf("CWD=%s WebDir=%s exists=%v", wd, cfg.WebDir, fileExists(cfg.WebDir))
 	gin.SetMode(gin.TestMode)
 
 	db, err := database.New(cfg)
@@ -261,4 +267,9 @@ func assertError(t *testing.T, w *httptest.ResponseRecorder, status int, code st
 	t.Helper()
 	assert.Equal(t, status, w.Code, "状态码不符: %s", w.Body.String())
 	assert.Equal(t, code, errorCode(t, w), "错误码不符: %s", w.Body.String())
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
 }
