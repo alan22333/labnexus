@@ -13,6 +13,7 @@ import (
 	"labnexus/internal/config"
 	"labnexus/internal/database"
 	"labnexus/internal/document"
+	"labnexus/internal/project"
 	"labnexus/internal/resource"
 	"labnexus/internal/space"
 	"labnexus/internal/tag"
@@ -33,6 +34,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		&document.Document{}, &document.DocumentTag{}, &document.Comment{}, &document.Reaction{},
 		&tag.Tag{},
 		&resource.Resource{}, &resource.ResourceTag{},
+		&project.Project{}, &project.ProjectMember{}, &project.Milestone{}, &project.Task{}, &project.TaskLink{},
 	); err != nil {
 		return nil, err
 	}
@@ -72,6 +74,11 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	).WithTxRunner(database.GormTxRunner(db))
 	resHandler := resource.NewHandler(resSvc)
 
+	// 阶段 2:F9 项目/任务
+	projectSvc := project.NewService(project.NewGormRepository(db), users).
+		WithTxRunner(database.GormTxRunner(db))
+	projectHandler := project.NewHandler(projectSvc)
+
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -96,6 +103,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	docHandler.RegisterRoutes(r, cfg.JWTSecret)
 	tagHandler.RegisterRoutes(r, cfg.JWTSecret)
 	resHandler.RegisterRoutes(r, cfg.JWTSecret)
+	projectHandler.RegisterRoutes(r, cfg.JWTSecret)
 
 	return r, nil
 }

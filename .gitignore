@@ -19,3 +19,5 @@ coverage.out
 
 # 开发期本地文件存储
 data/uploads/
+data/uploads/
+**/data/uploads/
