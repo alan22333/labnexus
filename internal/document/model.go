@@ -5,6 +5,7 @@ package document
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -118,6 +119,8 @@ type Repository interface {
 	ListPublic(ctx context.Context, sort string, offset, limit int) ([]*Document, int64, error)
 	ListByTag(ctx context.Context, tagID string) ([]*Document, error)
 	CountByFolder(ctx context.Context, folderID string) (int64, error)
+	// Search 关键词搜索(标题/正文 LIKE;公开+本人可见;标题命中优先;最多 limit 条)
+	Search(ctx context.Context, userID, q string, limit int) ([]*Document, error)
 
 	// 批量统计,防 N+1(规范 §5)
 	ReactionStats(ctx context.Context, docIDs []string) (map[string]int64, error)
@@ -214,6 +217,28 @@ func (r *GormRepository) CountByFolder(ctx context.Context, folderID string) (in
 	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
 		Model(&Document{}).Where("folder_id = ?", folderID).Count(&n).Error
 	return n, err
+}
+
+// Search 关键词搜索:标题/正文 ILIKE(转义通配符),可见性 = 公开或本人,
+// 标题命中优先,其次创建时间倒序。
+func (r *GormRepository) Search(ctx context.Context, userID, q string, limit int) ([]*Document, error) {
+	pattern := "%" + escapeLike(q) + "%"
+	var docs []*Document
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Where("(title ILIKE ? ESCAPE '\\' OR content ILIKE ? ESCAPE '\\') AND (visibility = ? OR author_id = ?)",
+			pattern, pattern, VisibilityPublic, userID).
+		Order(gorm.Expr("(title ILIKE ? ESCAPE '\\') DESC, created_at DESC", pattern)).
+		Limit(limit).
+		Find(&docs).Error
+	return docs, err
+}
+
+// escapeLike 转义 LIKE 通配符(% / _ / 反斜杠)。
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 func (r *GormRepository) ReactionStats(ctx context.Context, docIDs []string) (map[string]int64, error) {

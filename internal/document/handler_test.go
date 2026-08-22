@@ -186,3 +186,33 @@ func TestDoc_DeleteCommentForbidden(t *testing.T) {
 	w := docDo(t, r, http.MethodDelete, "/api/comments/"+comment.ID, "", authHeader(userA))
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
+
+func TestSearch_RequiresAuth(t *testing.T) {
+	r, _ := newTestRouter(t)
+	w := docDo(t, r, http.MethodGet, "/api/search?q=x", "", "")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestSearch_MissingQuery(t *testing.T) {
+	r, _ := newTestRouter(t)
+	w := docDo(t, r, http.MethodGet, "/api/search", "", authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "VALIDATION")
+}
+
+func TestSearch_Success(t *testing.T) {
+	r, f := newTestRouter(t)
+	f.ensureUser(userA)
+	f.ensureUser(userB)
+	spA := f.spaces.byUser[userA]
+	f.seedDocContent(userA, spA.ID, nil, "投稿避坑指南", "关于投稿的经验", document.VisibilityPublic)
+	spB := f.spaces.byUser[userB]
+	f.seedDocContent(userB, spB.ID, nil, "B的秘密", "投稿 绝密", document.VisibilityPrivate)
+
+	w := docDo(t, r, http.MethodGet, "/api/search?q=投稿", "", authHeader(userA))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "投稿避坑指南")
+	assert.NotContains(t, w.Body.String(), "B的秘密")
+	assert.Contains(t, w.Body.String(), `"resources":[]`)
+	assert.Contains(t, w.Body.String(), `"tasks":[]`)
+}

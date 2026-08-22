@@ -24,12 +24,15 @@ var (
 	ErrCommentForbidden  = errors.New("cannot delete others' comment")
 	ErrContentEmpty      = errors.New("content is empty")
 	ErrInvalidReply      = errors.New("invalid reply target")
+	ErrEmptyQuery        = errors.New("search query is empty")
+	ErrInvalidSearchType = errors.New("invalid search type")
 )
 
 // 分页默认值
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 50
+	SearchLimit     = 50
 )
 
 // Service 文档/信息流业务逻辑
@@ -334,6 +337,39 @@ func (s *Service) DeleteComment(ctx context.Context, userID, commentID string) e
 		return ErrCommentForbidden
 	}
 	return s.comments.Delete(ctx, comment.ID)
+}
+
+// ---- F6:搜索 ----
+
+// SearchResult 搜索结果(三组结构固定;阶段 1 仅 documents 有值)
+type SearchResult struct {
+	Documents []*DocumentView `json:"documents"`
+	Resources []any           `json:"resources"`
+	Tasks     []any           `json:"tasks"`
+}
+
+// Search 关键词搜索(标题/正文 LIKE;公开+本人可见;标题命中优先;上限 SearchLimit)。
+func (s *Service) Search(ctx context.Context, userID, q, contentType string) (*SearchResult, error) {
+	if strings.TrimSpace(q) == "" {
+		return nil, ErrEmptyQuery
+	}
+	switch contentType {
+	case "", "document":
+		docs, err := s.docs.Search(ctx, userID, q, SearchLimit)
+		if err != nil {
+			return nil, err
+		}
+		views, err := s.buildViews(ctx, docs)
+		if err != nil {
+			return nil, err
+		}
+		return &SearchResult{Documents: views, Resources: []any{}, Tasks: []any{}}, nil
+	case "resource", "task":
+		// 阶段 2(F7 资源 / F9 任务)上线后并入搜索
+		return &SearchResult{Documents: []*DocumentView{}, Resources: []any{}, Tasks: []any{}}, nil
+	default:
+		return nil, ErrInvalidSearchType
+	}
 }
 
 // ---- 视图组装(防 N+1:批量查询) ----

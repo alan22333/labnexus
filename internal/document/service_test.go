@@ -3,6 +3,7 @@ package document_test
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,6 +295,32 @@ func (r *memDocRepo) CountByFolder(_ context.Context, folderID string) (int64, e
 	return n, nil
 }
 
+func (r *memDocRepo) Search(_ context.Context, userID, q string, limit int) ([]*document.Document, error) {
+	q = strings.ToLower(q)
+	var out []*document.Document
+	for _, d := range r.byID {
+		if d.Visibility != document.VisibilityPublic && d.AuthorID != userID {
+			continue
+		}
+		if strings.Contains(strings.ToLower(d.Title), q) || strings.Contains(strings.ToLower(d.Content), q) {
+			out = append(out, d)
+		}
+	}
+	// 标题命中优先,其次创建时间倒序(与 GORM 实现一致)
+	sort.Slice(out, func(i, j int) bool {
+		ti := strings.Contains(strings.ToLower(out[i].Title), q)
+		tj := strings.Contains(strings.ToLower(out[j].Title), q)
+		if ti != tj {
+			return ti
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *memDocRepo) ReactionStats(_ context.Context, docIDs []string) (map[string]int64, error) {
 	out := map[string]int64{}
 	for _, id := range docIDs {
@@ -368,7 +395,11 @@ func (f *fixture) seedTag(name string) *tag.Tag {
 }
 
 func (f *fixture) seedDoc(authorID, spaceID string, folderID *string, title, vis string) *document.Document {
-	d := document.NewDocument(authorID, spaceID, folderID, title, "content", vis)
+	return f.seedDocContent(authorID, spaceID, folderID, title, "content", vis)
+}
+
+func (f *fixture) seedDocContent(authorID, spaceID string, folderID *string, title, content, vis string) *document.Document {
+	d := document.NewDocument(authorID, spaceID, folderID, title, content, vis)
 	_ = f.docs.Create(context.Background(), d)
 	return d
 }
@@ -709,4 +740,91 @@ func TestDeleteComment_AuthorOnly(t *testing.T) {
 	views, err := f.svc.ListComments(context.Background(), doc.ID)
 	require.NoError(t, err)
 	assert.Empty(t, views)
+}
+
+// ---- F6:搜索 ----
+
+func TestSearch_ByTitleAndContent(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	sp := f.seedSpace(userA)
+	f.seedDocContent(userA, sp.ID, nil, "论文写作指南", "关于论文的注意事项", document.VisibilityPublic)
+	f.seedDocContent(userA, sp.ID, nil, "实验记录", "今天用到了 X 方法", document.VisibilityPublic)
+
+	res, err := f.svc.Search(context.Background(), userA, "论文", "")
+	require.NoError(t, err)
+	require.Len(t, res.Documents, 1)
+	assert.Equal(t, "论文写作指南", res.Documents[0].Title)
+
+	res2, err := f.svc.Search(context.Background(), userA, "X 方法", "")
+	require.NoError(t, err)
+	require.Len(t, res2.Documents, 1)
+	assert.Equal(t, "实验记录", res2.Documents[0].Title)
+}
+
+func TestSearch_Visibility(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	f.seedUser(userB, "bob")
+	spA := f.seedSpace(userA)
+	spB := f.seedSpace(userB)
+	f.seedDocContent(userA, spA.ID, nil, "A公开", "关键词K", document.VisibilityPublic)
+	f.seedDocContent(userA, spA.ID, nil, "A私有", "关键词K", document.VisibilityPrivate)
+	f.seedDocContent(userB, spB.ID, nil, "B公开", "关键词K", document.VisibilityPublic)
+	f.seedDocContent(userB, spB.ID, nil, "B私有", "关键词K", document.VisibilityPrivate)
+
+	res, err := f.svc.Search(context.Background(), userA, "关键词K", "")
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, v := range res.Documents {
+		got[v.Title] = true
+	}
+	assert.True(t, got["A公开"], "本人公开应命中")
+	assert.True(t, got["A私有"], "本人私有应命中")
+	assert.True(t, got["B公开"], "他人公开应命中")
+	assert.False(t, got["B私有"], "他人私有不应泄露")
+}
+
+func TestSearch_TitleFirst(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	sp := f.seedSpace(userA)
+	f.seedDocContent(userA, sp.ID, nil, "正文提到激光", "激光技术综述", document.VisibilityPublic)
+	time.Sleep(2 * time.Millisecond)
+	f.seedDocContent(userA, sp.ID, nil, "激光焊接新进展", "正文无关", document.VisibilityPublic)
+
+	res, err := f.svc.Search(context.Background(), userA, "激光", "")
+	require.NoError(t, err)
+	require.Len(t, res.Documents, 2)
+	assert.Equal(t, "激光焊接新进展", res.Documents[0].Title, "标题命中应排前")
+}
+
+func TestSearch_EmptyQuery(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	f.seedSpace(userA)
+
+	_, err := f.svc.Search(context.Background(), userA, "  ", "document")
+	assert.ErrorIs(t, err, document.ErrEmptyQuery)
+}
+
+func TestSearch_TypeResourceEmpty(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	f.seedSpace(userA)
+
+	res, err := f.svc.Search(context.Background(), userA, "关键词", "resource")
+	require.NoError(t, err)
+	assert.Empty(t, res.Documents)
+	assert.NotNil(t, res.Resources)
+	assert.NotNil(t, res.Tasks)
+}
+
+func TestSearch_InvalidType(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, "alice")
+	f.seedSpace(userA)
+
+	_, err := f.svc.Search(context.Background(), userA, "关键词", "video")
+	assert.ErrorIs(t, err, document.ErrInvalidSearchType)
 }

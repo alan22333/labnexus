@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -44,6 +45,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 
 	// F5 标签内容页(依赖倒置:由拥有内容聚合能力的 document 模块注册)
 	authed.GET("/tags/:id/contents", h.TagContents)
+
+	// F6 搜索
+	authed.GET("/search", h.Search)
 }
 
 func (h *Handler) userID(c *gin.Context) string {
@@ -191,6 +195,22 @@ func (h *Handler) TagContents(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"documents": views})
 }
 
+// ---- F6 搜索 ----
+
+func (h *Handler) Search(c *gin.Context) {
+	q := c.Query("q")
+	if strings.TrimSpace(q) == "" {
+		respondError(c, http.StatusBadRequest, "VALIDATION", "query parameter q is required")
+		return
+	}
+	result, err := h.svc.Search(c.Request.Context(), h.userID(c), q, c.Query("type"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // ---- 错误映射 ----
 
 func respondServiceError(c *gin.Context, err error) {
@@ -203,6 +223,7 @@ func respondServiceError(c *gin.Context, err error) {
 		respondError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
 	case errors.Is(err, ErrTitleEmpty), errors.Is(err, ErrInvalidVisibility),
 		errors.Is(err, ErrContentEmpty), errors.Is(err, ErrInvalidReply),
+		errors.Is(err, ErrEmptyQuery), errors.Is(err, ErrInvalidSearchType),
 		errors.Is(err, tag.ErrTagNotFound):
 		respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())
 	default:
