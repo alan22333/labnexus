@@ -13,6 +13,7 @@ import (
 	"labnexus/internal/config"
 	"labnexus/internal/database"
 	"labnexus/internal/document"
+	"labnexus/internal/resource"
 	"labnexus/internal/space"
 	"labnexus/internal/tag"
 	"labnexus/internal/user"
@@ -31,6 +32,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		&space.Space{}, &space.Folder{},
 		&document.Document{}, &document.DocumentTag{}, &document.Comment{}, &document.Reaction{},
 		&tag.Tag{},
+		&resource.Resource{}, &resource.ResourceTag{},
 	); err != nil {
 		return nil, err
 	}
@@ -59,6 +61,17 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	).WithTxRunner(database.GormTxRunner(db))
 	docHandler := document.NewHandler(docSvc)
 
+	// 阶段 2:F7 资源库 + F8 文献元数据
+	fileStore, err := resource.NewLocalFileStore("data/uploads")
+	if err != nil {
+		return nil, err
+	}
+	resSvc := resource.NewService(
+		resource.NewGormRepository(db),
+		tagRepo, fileStore, users,
+	).WithTxRunner(database.GormTxRunner(db))
+	resHandler := resource.NewHandler(resSvc)
+
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -82,6 +95,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	spaceHandler.RegisterRoutes(r, cfg.JWTSecret)
 	docHandler.RegisterRoutes(r, cfg.JWTSecret)
 	tagHandler.RegisterRoutes(r, cfg.JWTSecret)
+	resHandler.RegisterRoutes(r, cfg.JWTSecret)
 
 	return r, nil
 }

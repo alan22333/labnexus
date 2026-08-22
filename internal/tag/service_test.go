@@ -83,6 +83,10 @@ func (r *memTagRepo) ListDocumentIDsByTag(_ context.Context, tagID string) ([]st
 	return ids, nil
 }
 
+func (r *memTagRepo) ListByResourceIDs(_ context.Context, _ []string) (map[string][]*tag.Tag, error) {
+	return nil, nil
+}
+
 // ---- 测试 ----
 
 func TestCreateTag_Success(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,6 +71,25 @@ func doJSON(t *testing.T, r *gin.Engine, method, path, body, token string) *http
 	}
 	req := httptest.NewRequest(method, path, reqBody)
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// doMultipart 文件上传请求(multipart/form-data,file 字段)。
+func doMultipart(t *testing.T, r *gin.Engine, path, filename, content, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	require.NoError(t, err)
+	_, _ = fw.Write([]byte(content))
+	require.NoError(t, mw.Close())
+	req := httptest.NewRequest(http.MethodPost, path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

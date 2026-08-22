@@ -122,6 +122,9 @@ func (r *memTagRepo) ListByDocumentIDs(_ context.Context, docIDs []string) (map[
 func (r *memTagRepo) ListDocumentIDsByTag(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }
+func (r *memTagRepo) ListByResourceIDs(_ context.Context, _ []string) (map[string][]*tag.Tag, error) {
+	return nil, nil
+}
 
 type memReactionRepo struct {
 	rows map[string]*document.Reaction // id -> reaction

@@ -426,10 +426,14 @@ func (s *Service) buildViews(ctx context.Context, docs []*Document) ([]*Document
 
 	views := make([]*DocumentView, 0, len(docs))
 	for _, d := range docs {
+		tags := tagsByDoc[d.ID]
+		if tags == nil {
+			tags = []*tag.Tag{} // JSON 输出 [] 而非 null
+		}
 		views = append(views, &DocumentView{
 			Document:       d,
 			Author:         userByID[d.AuthorID],
-			Tags:           tagsByDoc[d.ID],
+			Tags:           tags,
 			ReactionsCount: reactionStats[d.ID],
 			CommentsCount:  commentStats[d.ID],
 		})

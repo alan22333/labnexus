@@ -40,6 +40,8 @@ type Repository interface {
 	List(ctx context.Context) ([]*Tag, error)
 	// ListByDocumentIDs 批量查询多个文档的标签(docID → tags),防 N+1(规范 §5)
 	ListByDocumentIDs(ctx context.Context, docIDs []string) (map[string][]*Tag, error)
+	// ListByResourceIDs 批量查询多个资源的标签(resourceID → tags),防 N+1
+	ListByResourceIDs(ctx context.Context, resourceIDs []string) (map[string][]*Tag, error)
 	// ListDocumentIDsByTag 查询打了某标签的文档 ID(F5 内容页)
 	ListDocumentIDsByTag(ctx context.Context, tagID string) ([]string, error)
 }
@@ -89,28 +91,37 @@ func (r *GormRepository) List(ctx context.Context) ([]*Tag, error) {
 }
 
 func (r *GormRepository) ListByDocumentIDs(ctx context.Context, docIDs []string) (map[string][]*Tag, error) {
-	result := make(map[string][]*Tag, len(docIDs))
-	if len(docIDs) == 0 {
+	return r.listByIDs(ctx, "document_tags", "document_id", docIDs)
+}
+
+func (r *GormRepository) ListByResourceIDs(ctx context.Context, resourceIDs []string) (map[string][]*Tag, error) {
+	return r.listByIDs(ctx, "resource_tags", "resource_id", resourceIDs)
+}
+
+// listByIDs 通用实现:按关联表批量查标签(docID/resourceID → tags)
+func (r *GormRepository) listByIDs(ctx context.Context, table, idCol string, ids []string) (map[string][]*Tag, error) {
+	result := make(map[string][]*Tag, len(ids))
+	if len(ids) == 0 {
 		return result, nil
 	}
 	type row struct {
-		DocumentID string
-		TagID      string
-		TagName    string
-		TagColor   string
+		ItemID  string
+		TagID   string
+		TagName string
+		TagColor string
 	}
 	var rows []row
 	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
-		Table("document_tags").
-		Select("document_tags.document_id, tags.id AS tag_id, tags.name AS tag_name, tags.color AS tag_color").
-		Joins("JOIN tags ON tags.id = document_tags.tag_id").
-		Where("document_tags.document_id IN ?", docIDs).
+		Table(table).
+		Select(table+"."+idCol+" AS item_id, tags.id AS tag_id, tags.name AS tag_name, tags.color AS tag_color").
+		Joins("JOIN tags ON tags.id = "+table+".tag_id").
+		Where(table+"."+idCol+" IN ?", ids).
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	for _, rw := range rows {
-		result[rw.DocumentID] = append(result[rw.DocumentID], &Tag{
+		result[rw.ItemID] = append(result[rw.ItemID], &Tag{
 			ID: rw.TagID, Name: rw.TagName, Color: rw.TagColor,
 		})
 	}
