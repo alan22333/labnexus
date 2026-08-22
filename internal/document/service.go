@@ -35,6 +35,20 @@ const (
 	SearchLimit     = 50
 )
 
+// NormalizePage 归一化分页参数(handler 与 service 共用,保证回显与实际一致)。
+func NormalizePage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = DefaultPageSize
+	}
+	if pageSize > MaxPageSize {
+		pageSize = MaxPageSize
+	}
+	return page, pageSize
+}
+
 // Service 文档/信息流业务逻辑
 type Service struct {
 	docs      Repository
@@ -257,15 +271,7 @@ func (s *Service) ListByTag(ctx context.Context, userID, tagID string) ([]*Docum
 
 // GetFeed 社区信息流(latest 创建倒序 / hot 点赞数倒序,分页)。
 func (s *Service) GetFeed(ctx context.Context, sort string, page, pageSize int) ([]*DocumentView, int64, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = DefaultPageSize
-	}
-	if pageSize > MaxPageSize {
-		pageSize = MaxPageSize
-	}
+	page, pageSize = NormalizePage(page, pageSize)
 	offset := (page - 1) * pageSize
 	docs, total, err := s.docs.ListPublic(ctx, sort, offset, pageSize)
 	if err != nil {

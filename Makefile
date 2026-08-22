@@ -25,6 +25,10 @@ tidy:
 test:
 	go test ./... -cover
 
+# 集成测试(真实 Postgres+Redis,需先 make up;环境未就绪自动跳过)
+test-integration:
+	go test -tags integration -v ./test/integration/...
+
 lint:
 	golangci-lint run ./...
 

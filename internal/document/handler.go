@@ -120,6 +120,8 @@ func (h *Handler) Feed(c *gin.Context) {
 	sortMode := c.DefaultQuery("sort", "latest")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	// 归一化(与实际执行一致,回显真实值)
+	page, pageSize = NormalizePage(page, pageSize)
 
 	views, total, err := h.svc.GetFeed(c.Request.Context(), sortMode, page, pageSize)
 	if err != nil {

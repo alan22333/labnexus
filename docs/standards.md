@@ -62,7 +62,12 @@
 |---|---|---|---|
 | 单元测试 | service 层(业务规则、状态机、权限判定) | 无外部服务(repository 用替身或内存实现) | 大头 |
 | handler 测试 | handler 层(参数解析、状态码、错误格式) | `net/http/httptest` + mock service | 中 |
-| 集成测试 | repository 层(真实 SQL 语义) | 容器 Postgres(可选,阶段 2 引入) | 少 |
+| **集成测试** | 端到端 HTTP(真实装配 `internal/app`) | **真实 Postgres + Redis 容器** | 场景级 |
+
+- 集成测试位于 `test/integration/`(build tag `integration`),运行 `make test-integration`(需先 `make up`);
+- 集成测试通过 `app.Build` 使用**与生产完全一致**的装配,测试即生产;
+- 集成测试覆盖:认证安全矩阵、多用户业务流、数据隔离、越权矩阵、边界/幂等、契约一致性;
+- 环境未就绪(容器未启动)时集成测试自动 `t.Skip`,不阻塞普通 `make check`。
 
 ### 2.2 编写约定
 
