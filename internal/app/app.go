@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -60,7 +61,18 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		document.NewGormCommentRepository(db),
 		document.NewGormReactionRepository(db),
 		tagRepo, users, spaces, folders,
-	).WithTxRunner(database.GormTxRunner(db))
+	).WithTxRunner(database.GormTxRunner(db)).
+		WithSearchProviders(
+			func(ctx context.Context, q string, limit int) ([]*resource.Resource, error) {
+				list, _, err := resource.NewGormRepository(db).List(ctx, resource.ListFilter{
+					Keyword: q, Page: 1, PageSize: limit,
+				})
+				return list, err
+			},
+			func(ctx context.Context, q string, limit int) ([]*project.Task, error) {
+				return project.NewGormRepository(db).SearchTasks(ctx, q, limit)
+			},
+		)
 	docHandler := document.NewHandler(docSvc)
 
 	// 阶段 2:F7 资源库 + F8 文献元数据

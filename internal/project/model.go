@@ -5,6 +5,7 @@ package project
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -132,6 +133,8 @@ type Repository interface {
 	UpdateTask(ctx context.Context, t *Task) error
 	SoftDeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, projectID string, f ListFilter) ([]*Task, error)
+	// SearchTasks 跨项目搜索任务(标题 ILIKE,用于全局搜索聚合)
+	SearchTasks(ctx context.Context, keyword string, limit int) ([]*Task, error)
 
 	LinkTask(ctx context.Context, taskID, targetType, targetID string) error
 	ListLinks(ctx context.Context, taskID string) ([]*TaskLink, error)
@@ -274,6 +277,22 @@ func (r *GormRepository) ListTasks(ctx context.Context, projectID string, f List
 	var list []*Task
 	err := q.Order("created_at DESC").Find(&list).Error
 	return list, err
+}
+
+func (r *GormRepository) SearchTasks(ctx context.Context, keyword string, limit int) ([]*Task, error) {
+	var list []*Task
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Where("title ILIKE ? ESCAPE '\\'", "%"+escapeLike(keyword)+"%"). // 透传通配符?按字面匹配
+		Order("created_at DESC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
+// escapeLike 转义 LIKE 通配符(与 document/resource 一致)
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 func (r *GormRepository) LinkTask(ctx context.Context, taskID, targetType, targetID string) error {

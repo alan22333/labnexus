@@ -61,3 +61,4 @@
 
 - [x] §1.3 checklist 通过(2026-08-22)
 - [x] 已实现并验收:单元/handler 测试全绿,集成测试(project_test.go)+ 端到端冒烟通过(scripts/smoke-project.sh),`make check` 全绿(2026-08-22)
+- [x] 深度接口测试:数据隔离/越权矩阵/状态机全表/边界/软删除/契约结构(project_deep_test.go)

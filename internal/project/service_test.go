@@ -2,6 +2,7 @@ package project_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -194,6 +195,16 @@ func (r *memProjectRepo) ListTasks(_ context.Context, projectID string, f projec
 			continue
 		}
 		out = append(out, t)
+	}
+	return out, nil
+}
+
+func (r *memProjectRepo) SearchTasks(_ context.Context, keyword string, limit int) ([]*project.Task, error) {
+	var out []*project.Task
+	for _, t := range r.tasks {
+		if strings.Contains(strings.ToLower(t.Title), strings.ToLower(keyword)) {
+			out = append(out, t)
+		}
 	}
 	return out, nil
 }

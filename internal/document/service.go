@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"labnexus/internal/database"
+	"labnexus/internal/project"
+	"labnexus/internal/resource"
 	"labnexus/internal/space"
 	"labnexus/internal/tag"
 	"labnexus/internal/user"
@@ -59,6 +61,9 @@ type Service struct {
 	spaces    space.Repository
 	folders   space.FolderRepository
 	txRunner  database.TxRunner
+
+	resourceSearch ResourceSearchFn // 可选:资源搜索(阶段 2)
+	taskSearch     TaskSearchFn     // 可选:任务搜索(阶段 2)
 }
 
 // NewService 构造函数(依赖注入)
@@ -347,20 +352,38 @@ func (s *Service) DeleteComment(ctx context.Context, userID, commentID string) e
 
 // ---- F6:搜索 ----
 
-// SearchResult 搜索结果(三组结构固定;阶段 1 仅 documents 有值)
+// SearchResult 搜索结果(三组结构固定;资源/任务由阶段 2 搜索器注入)
 type SearchResult struct {
-	Documents []*DocumentView `json:"documents"`
-	Resources []any           `json:"resources"`
-	Tasks     []any           `json:"tasks"`
+	Documents []*DocumentView       `json:"documents"`
+	Resources []*resource.Resource  `json:"resources"`
+	Tasks     []*project.Task       `json:"tasks"`
 }
 
-// Search 关键词搜索(标题/正文 LIKE;公开+本人可见;标题命中优先;上限 SearchLimit)。
+// ResourceSearchFn 资源搜索器(由 app 装配注入,阶段 2 F7)
+type ResourceSearchFn func(ctx context.Context, q string, limit int) ([]*resource.Resource, error)
+
+// TaskSearchFn 任务搜索器(由 app 装配注入,阶段 2 F9)
+type TaskSearchFn func(ctx context.Context, q string, limit int) ([]*project.Task, error)
+
+// WithSearchProviders 注入跨类型搜索器(资源/任务;nil 时对应分组返回空)。
+func (s *Service) WithSearchProviders(resFn ResourceSearchFn, taskFn TaskSearchFn) *Service {
+	s.resourceSearch = resFn
+	s.taskSearch = taskFn
+	return s
+}
+
+// Search 关键词搜索:文档(标题/正文,公开+本人)+ 资源/任务(若已注入搜索器)。
 func (s *Service) Search(ctx context.Context, userID, q, contentType string) (*SearchResult, error) {
 	if strings.TrimSpace(q) == "" {
 		return nil, ErrEmptyQuery
 	}
+	empty := &SearchResult{
+		Documents: []*DocumentView{},
+		Resources: []*resource.Resource{},
+		Tasks:     []*project.Task{},
+	}
 	switch contentType {
-	case "", "document":
+	case "document":
 		docs, err := s.docs.Search(ctx, userID, q, SearchLimit)
 		if err != nil {
 			return nil, err
@@ -369,10 +392,57 @@ func (s *Service) Search(ctx context.Context, userID, q, contentType string) (*S
 		if err != nil {
 			return nil, err
 		}
-		return &SearchResult{Documents: views, Resources: []any{}, Tasks: []any{}}, nil
-	case "resource", "task":
-		// 阶段 2(F7 资源 / F9 任务)上线后并入搜索
-		return &SearchResult{Documents: []*DocumentView{}, Resources: []any{}, Tasks: []any{}}, nil
+		return &SearchResult{Documents: views, Resources: []*resource.Resource{}, Tasks: []*project.Task{}}, nil
+	case "resource":
+		if s.resourceSearch == nil {
+			return empty, nil
+		}
+		list, err := s.resourceSearch(ctx, q, SearchLimit)
+		if err != nil {
+			return nil, err
+		}
+		if list == nil {
+			list = []*resource.Resource{}
+		}
+		return &SearchResult{Documents: []*DocumentView{}, Resources: list, Tasks: []*project.Task{}}, nil
+	case "task":
+		if s.taskSearch == nil {
+			return empty, nil
+		}
+		list, err := s.taskSearch(ctx, q, SearchLimit)
+		if err != nil {
+			return nil, err
+		}
+		if list == nil {
+			list = []*project.Task{}
+		}
+		return &SearchResult{Documents: []*DocumentView{}, Resources: []*resource.Resource{}, Tasks: list}, nil
+	case "":
+		// 默认:聚合文档 + 资源 + 任务(资源/任务依赖注入的搜索器)
+		docs, err := s.docs.Search(ctx, userID, q, SearchLimit)
+		if err != nil {
+			return nil, err
+		}
+		views, err := s.buildViews(ctx, docs)
+		if err != nil {
+			return nil, err
+		}
+		result := &SearchResult{Documents: views, Resources: []*resource.Resource{}, Tasks: []*project.Task{}}
+		if s.resourceSearch != nil {
+			list, err := s.resourceSearch(ctx, q, SearchLimit)
+			if err != nil {
+				return nil, err
+			}
+			result.Resources = list
+		}
+		if s.taskSearch != nil {
+			list, err := s.taskSearch(ctx, q, SearchLimit)
+			if err != nil {
+				return nil, err
+			}
+			result.Tasks = list
+		}
+		return result, nil
 	default:
 		return nil, ErrInvalidSearchType
 	}

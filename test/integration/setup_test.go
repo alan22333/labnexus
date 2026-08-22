@@ -23,10 +23,12 @@ import (
 	"labnexus/internal/database"
 )
 
-// truncateTables 清理的业务表(顺序无关,无外键约束,加 CASCADE 保险)
+// truncateTables 清理的业务表(阶段 1+2;顺序无关,无外键约束,加 CASCADE 保险)
 var truncateTables = []string{
 	"document_tags", "reactions", "comments", "documents",
 	"folders", "spaces", "invite_codes", "tags", "users",
+	"resource_tags", "resources",
+	"task_links", "tasks", "milestones", "project_members", "projects",
 }
 
 // setupServer 构建生产装配(与 main 完全一致),清空数据,返回路由。

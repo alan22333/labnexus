@@ -19,7 +19,7 @@
   - **可见性**:公开文档 + 本人私有文档(他人私有不泄露);
   - 排序:标题命中优先,其次创建时间倒序;
   - 限制:最多返回 50 条;
-  - `type` 参数:document / resource / task;**阶段 1 仅 document 生效**,resource/task 返回空数组(阶段 2 的 F7/F9 上线后并入);
+  - `type` 参数:document / resource / task;默认(type 缺省)聚合三类;**F7/F9 上线后 resource/task 已并入**(2026-08-22);
   - 响应:`{documents: [], resources: [], tasks: []}`(三组结构固定,阶段 1 后两组为空)。
 
 ## 3. 接口
@@ -51,4 +51,5 @@
 ## 7. 评审记录
 
 - [x] §1.3 checklist 通过(2026-08-22)
-- [x] 已实现并验收:单元/handler 测试全绿,端到端冒烟通过(标题命中/可见性过滤/400 校验),`make check` 全绿(2026-08-22)
+- [x] 已实现并验收:单元/handler 测试全绿,端到端冒烟通过,`make check` 全绿(2026-08-22)
+- [x] 增强:资源/任务搜索并入(WithSearchProviders),深度集成测试覆盖跨类型聚合与可见性(2026-08-22)

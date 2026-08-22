@@ -63,3 +63,4 @@
 
 - [x] §1.3 checklist 通过(2026-08-22)
 - [x] 已实现并验收:单元/handler 测试全绿,集成测试(resource_test.go)+ 端到端冒烟通过(scripts/smoke-resource.sh),`make check` 全绿(2026-08-22)
+- [x] 深度接口测试:筛选组合/分页/上传边界/文件生命周期/越权细化/契约结构(resource_deep_test.go)
