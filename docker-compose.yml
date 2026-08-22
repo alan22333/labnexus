@@ -6,8 +6,9 @@ services:
       POSTGRES_USER: labnexus
       POSTGRES_PASSWORD: labnexus
       POSTGRES_DB: labnexus
+    # 宿主 5433 → 容器 5432:避免与本机已装的 Postgres(5432)冲突
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,8 +20,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: labnexus-redis
+    # 宿主 6380 → 容器 6379:避免与本机已装的 Redis(6379)冲突
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redisdata:/data
     healthcheck:

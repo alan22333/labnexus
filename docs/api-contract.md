@@ -18,7 +18,7 @@
 
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
-| POST | `/auth/register` | 🔓 | `{invite_code, username, display_name, password}` | `201 {user}` |
+| POST | `/auth/register` | 🔓 | `{invite_code, username, display_name, password}` | `201 {access_token, user}`(注册即登录,refresh 写 cookie) |
 | POST | `/auth/login` | 🔓 | `{username, password}` | `{access_token, user}`(refresh 写 cookie) |
 | POST | `/auth/refresh` | 🔓 | —(读 cookie) | `{access_token}`(刷新并轮换 refresh) |
 | POST | `/auth/logout` | 🔐 | — | `204`(撤销 refresh,Redis 删除) |

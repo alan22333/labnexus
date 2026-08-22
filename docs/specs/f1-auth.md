@@ -13,7 +13,7 @@
 
 ## 2. 行为需求
 
-- **注册**:用户提交 `invite_code + username + display_name + password`,邀请码有效(存在、未过期、未使用)才允许注册;注册成功后邀请码标记已使用,自动创建 `space`(个人空间)。
+- **注册**:用户提交 `invite_code + username + display_name + password`,邀请码有效(存在、未过期、未使用)才允许注册;注册成功后邀请码标记已使用,自动创建 `space`(个人空间);**注册即登录**(直接返回 access token,refresh 写 cookie,免二次登录)。
 - **登录**:`username + password` 校验通过 → 签发 access token(15 min)与 refresh token(30 天);refresh 存 Redis,access 返回给前端。
 - **刷新**:携带有效 refresh → 签发新 access + 新 refresh(轮换,旧 refresh 作废)。
 - **登出**:撤销当前 refresh(Redis 删除)。
@@ -31,7 +31,7 @@
 
 ## 4. 验收标准(可测清单)
 
-- [ ] 注册:有效邀请码 → 201 + 用户创建 + 邀请码标记已用 + space 自动创建
+- [ ] 注册:有效邀请码 → 201 + 用户创建 + 邀请码标记已用 + space 自动创建 + 返回 access_token(注册即登录)
 - [ ] 注册:邀请码不存在/已过期/已使用 → 401 `INVALID_INVITE`
 - [ ] 注册:username 重复 → 409 `CONFLICT`;password < 8 位 → 400 `VALIDATION`
 - [ ] 登录:正确凭据 → 200 + access token + httpOnly refresh cookie
@@ -59,3 +59,4 @@
 ## 7. 评审记录
 
 - [x] §1.3 checklist 通过(2026-08-22)
+- [x] 已实现并验收:单元/handler/middleware 测试全绿,端到端冒烟通过(scripts/smoke-auth.sh),`make check` 全绿(2026-08-22)
