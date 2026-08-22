@@ -97,7 +97,14 @@ const App = {
     document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
     const main = document.getElementById('main');
     main.innerHTML = '<div class="empty">加载中…</div>';
-    const fn = { feed: Feed.render, space: Space.render, resources: Resources.render, projects: Projects.render, tags: Tags.render }[view];
+    // 箭头函数包裹保留 this(直接取函数引用会导致 this 丢失)
+    const fn = {
+      feed: () => Feed.render(),
+      space: () => Space.render(),
+      resources: () => Resources.render(),
+      projects: () => Projects.render(),
+      tags: () => Tags.render(),
+    }[view];
     if (fn) fn();
   },
   init() {
@@ -531,15 +538,16 @@ const Search = {
     try {
       const d = await api('/search?q=' + encodeURIComponent(q));
       const main = document.getElementById('main');
+      const docs = d.documents || [], ress = d.resources || [], tasks = d.tasks || [];
       main.innerHTML = `<div class="toolbar"><h2>搜索:"${esc(q)}"</h2></div>
-        <div class="result-group"><h4>📄 文档 (${d.documents.length})</h4>
-          ${(d.documents || []).map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">👤 ${esc(x.author ? x.author.display_name : '?')} ${x.visibility === 'public' ? '公开' : '私有'}</div></div>`).join('') || '<div class="empty">无</div>'}
+        <div class="result-group"><h4>📄 文档 (${docs.length})</h4>
+          ${docs.map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">👤 ${esc(x.author ? x.author.display_name : '?')} ${x.visibility === 'public' ? '公开' : '私有'}</div></div>`).join('') || '<div class="empty">无</div>'}
         </div>
-        <div class="result-group"><h4>📚 资源 (${d.resources.length})</h4>
-          ${(d.resources || []).map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">类型:${x.type}</div></div>`).join('') || '<div class="empty">无</div>'}
+        <div class="result-group"><h4>📚 资源 (${ress.length})</h4>
+          ${ress.map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">类型:${x.type}</div></div>`).join('') || '<div class="empty">无</div>'}
         </div>
-        <div class="result-group"><h4>📋 任务 (${d.tasks.length})</h4>
-          ${(d.tasks || []).map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">状态:${statusName(x.status)}</div></div>`).join('') || '<div class="empty">无</div>'}
+        <div class="result-group"><h4>📋 任务 (${tasks.length})</h4>
+          ${tasks.map(x => `<div class="card"><h3>${esc(x.title)}</h3><div class="meta">状态:${statusName(x.status)}</div></div>`).join('') || '<div class="empty">无</div>'}
         </div>`;
     } catch (e) { alert(errMsg(e)); }
   },
@@ -589,6 +597,7 @@ function transitionBtns(task) {
 }
 
 // 全局初始化
+window.api = api; // API 封装暴露(e2e 测试与调试用)
 window.Auth = Auth; window.App = App; window.Feed = Feed; window.Space = Space;
 window.Editor = Editor; window.Resources = Resources; window.Projects = Projects;
 window.Tags = Tags; window.Search = Search;
