@@ -372,7 +372,8 @@ const Resources = {
         </select>
         <input id="res-keyword" placeholder="关键词…" onkeydown="if(event.key==='Enter')Resources.load()" style="max-width:200px">
         <button class="btn" onclick="Resources.load()">筛选</button>
-        <button class="btn primary" onclick="Resources.showCreate()">＋ 新建资源</button>
+        <button class="btn" onclick="Resources.showCreate('link')">🔗 新建链接</button>
+        <button class="btn primary" onclick="Resources.showCreate('file')">📤 上传文件</button>
       </div>
       <div id="res-list"></div>`;
     await this.load();
@@ -406,15 +407,16 @@ const Resources = {
         </div>`).join('');
     } catch (e) { document.getElementById('res-list').innerHTML = `<div class="empty">${esc(errMsg(e))}</div>`; }
   },
-  showCreate() {
-    document.getElementById('res-editor-title').textContent = '新建链接';
-    document.getElementById('res-type').value = 'link';
+  showCreate(type) {
+    type = type || 'link';
+    document.getElementById('res-editor-title').textContent = type === 'link' ? '新建链接' : '上传文件';
+    document.getElementById('res-type').value = type;
     document.getElementById('res-title').value = '';
     document.getElementById('res-url').value = '';
     document.getElementById('res-description').value = '';
     document.getElementById('res-file').value = '';
-    document.getElementById('res-file').style.display = 'none';
-    document.getElementById('res-url').style.display = '';
+    document.getElementById('res-file').style.display = type === 'file' ? '' : 'none';
+    document.getElementById('res-url').style.display = type === 'link' ? '' : 'none';
     loadTagPicker('res-tag-picker', []);
     showMsg('res-msg', '');
     document.getElementById('resource-modal').classList.remove('hidden');

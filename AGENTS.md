@@ -13,7 +13,7 @@
 | 层 | 选型 |
 |---|---|
 | 后端 | Go 1.25 + **Gin** + **GORM** + Postgres + Redis(JWT access 15min + refresh 存 Redis) |
-| 前端 | 阶段 1 验证期**纯 HTML/JS**;正式 **React + Vite + Tailwind** |
+| 前端 | 阶段 1 验证期**纯 HTML/JS**(仓库 `labnexus/web/`);正式 **React + Vite + Tailwind + shadcn/ui**(独立仓库 `labnexus-frontend`,见其 README) |
 | 架构 | **模块化单体** + **MVC 轻量分层**(`internal/<domain>/{handler,service,repository}`),依赖方向 handler→service→repository |
 | 部署 | 本地 docker compose → 0 成本演示(局域网/Cloudflare Tunnel)→ 国内服务器正式 |
 

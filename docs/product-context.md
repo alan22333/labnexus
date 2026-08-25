@@ -54,7 +54,7 @@ F10 文档↔资源关联 / F11 周报 / F12 通知推送 / F13 微信机器人 
 | D4 | 模块化单体,不做微服务 | 10 人规模,1 人开发 |
 | D5 | P0 = 社区四件套+标签+搜索 | 先让社区活 |
 | D6 | F10~F20 进灵感库,开发目标仅 F1~F9 | 聚焦 |
-| D7 | Go+Gin+GORM+JWT(Redis refresh)/React+Vite+Tailwind | 用户熟悉 Go 栈 + AI Coding 友好 |
+| D7 | Go+Gin+GORM+JWT(Redis refresh)/React+Vite+Tailwind+**shadcn/ui**(正式前端独立仓库 labnexus-frontend) | 用户熟悉 Go 栈 + AI Coding 友好;shadcn 与 Tailwind 零冲突、视觉现代、源码可定制(2026-08-25 定) |
 | D8 | 部署三阶段:本地→0 成本演示→国内服务器 | 先演示确认再投入 |
 | D9 | 引用格式默认 GB/T | 中国高校惯例 |
 | D10 | 产品代号 LabNexus | 已定 |
