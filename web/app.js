@@ -277,6 +277,38 @@ const Space = {
 };
 
 // ===== 编辑器 =====
+// ===== 标签多选组件(发帖/资源共用) =====
+// loadTagPicker(containerId, selectedIds?) 异步加载 /api/tags 并渲染 checkbox;
+// selectedTagIds(containerId) 读取当前勾选 id 数组。
+let tagCache = null;
+async function loadTagPicker(containerId, selectedIds) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    if (!tagCache) tagCache = await api('/tags');
+    const tags = tagCache.tags || [];
+    const sel = new Set(selectedIds || []);
+    if (!tags.length) {
+      container.innerHTML = '<span class="tag-picker-empty">暂无标签,先到「标签」页创建</span>';
+      return;
+    }
+    container.innerHTML = tags.map(t => `
+      <label class="tag-check">
+        <input type="checkbox" value="${esc(t.id)}" ${sel.has(t.id) ? 'checked' : ''}>
+        <span class="tag-pill" style="background:${esc(t.color || '#3b82f6')};color:#fff">${esc(t.name)}</span>
+      </label>`).join('');
+  } catch (e) {
+    container.innerHTML = '<span class="tag-picker-empty">标签加载失败</span>';
+  }
+}
+function selectedTagIds(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return [];
+  return Array.from(container.querySelectorAll('input[type=checkbox]:checked')).map(i => i.value);
+}
+function resetTagCache() { tagCache = null; }
+
+// ===== 文档编辑器 =====
 const Editor = {
   open(folderId) {
     document.getElementById('editor-title').textContent = '新建文档';
@@ -284,8 +316,8 @@ const Editor = {
     document.getElementById('doc-title').value = '';
     document.getElementById('doc-content').value = '';
     document.getElementById('doc-visibility').value = 'private';
-    document.getElementById('doc-tags').value = '';
     document.getElementById('doc-folder').value = folderId || Space.currentFolder || '';
+    loadTagPicker('doc-tag-picker', []);
     showMsg('editor-msg', '');
     document.getElementById('editor-modal').classList.remove('hidden');
   },
@@ -297,8 +329,8 @@ const Editor = {
       document.getElementById('doc-title').value = d.title;
       document.getElementById('doc-content').value = d.content;
       document.getElementById('doc-visibility').value = d.visibility;
-      document.getElementById('doc-tags').value = (d.tags || []).map(t => t.id).join(',');
       document.getElementById('doc-folder').value = d.folder_id || '';
+      loadTagPicker('doc-tag-picker', (d.tags || []).map(t => t.id));
       showMsg('editor-msg', '');
       document.getElementById('editor-modal').classList.remove('hidden');
     } catch (e) { alert(errMsg(e)); }
@@ -306,29 +338,14 @@ const Editor = {
   close() { document.getElementById('editor-modal').classList.add('hidden'); },
   async save() {
     const id = document.getElementById('doc-id').value;
-    if (id === 'RESOURCE') {
-      // 资源创建:visibility 字段临时充当 type
-      const type = document.getElementById('doc-visibility').value;
-      const title = document.getElementById('doc-title').value.trim();
-      const raw = document.getElementById('doc-content').value.trim();
-      const body = { type, title };
-      if (type === 'link') body.url = raw;
-      else if (type === 'paper') { if (/^10\./.test(raw)) body.doi = raw; else body.arxiv_id = raw; }
-      try {
-        await api('/resources', { method: 'POST', body });
-        this.close();
-        Resources.render();
-      } catch (e) { showMsg('editor-msg', errMsg(e)); }
-      return;
-    }
     const payload = {
       title: document.getElementById('doc-title').value,
       content: document.getElementById('doc-content').value,
       visibility: document.getElementById('doc-visibility').value,
     };
     const folder = document.getElementById('doc-folder').value;
-    const tags = document.getElementById('doc-tags').value.split(',').map(s => s.trim()).filter(Boolean);
-    if (tags.length) payload.tag_ids = tags;
+    const tags = selectedTagIds('doc-tag-picker');
+    payload.tag_ids = tags; // 明确提交(含清空)
     try {
       if (id) {
         await api('/documents/' + id, { method: 'PATCH', body: payload });
@@ -351,12 +368,11 @@ const Resources = {
         <h2>资源库</h2>
         <select id="res-type" onchange="Resources.load()">
           <option value="">全部类型</option><option value="link">链接</option>
-          <option value="paper">文献</option><option value="file">文件</option>
+          <option value="file">文件</option>
         </select>
         <input id="res-keyword" placeholder="关键词…" onkeydown="if(event.key==='Enter')Resources.load()" style="max-width:200px">
         <button class="btn" onclick="Resources.load()">筛选</button>
         <button class="btn primary" onclick="Resources.showCreate()">＋ 新建资源</button>
-        <label class="btn">上传文件<input type="file" style="display:none" onchange="Resources.upload(this)"></label>
       </div>
       <div id="res-list"></div>`;
     await this.load();
@@ -372,43 +388,95 @@ const Resources = {
       if (!d.resources.length) { list.innerHTML = '<div class="empty">暂无资源,上传或添加第一个吧</div>'; return; }
       list.innerHTML = d.resources.map(r => `
         <div class="card">
-          <h3>${r.type === 'link' ? '🔗' : r.type === 'paper' ? '📄' : '📎'} ${esc(r.title)}</h3>
+          <h3>${r.type === 'link' ? '🔗' : '📎'} ${esc(r.title)}</h3>
           <div class="meta">
-            <span>类型:${r.type}</span>
-            ${r.url ? `<span><a href="${esc(r.url)}" target="_blank">${esc(r.url)}</a></span>` : ''}
-            ${r.doi ? `<span>DOI:${esc(r.doi)}</span>` : ''}
-            ${r.arxiv_id ? `<span>arXiv:${esc(r.arxiv_id)}</span>` : ''}
+            <span>类型:${r.type === 'link' ? '链接' : '文件'}</span>
+            ${r.url ? `<span><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></span>` : ''}
+            ${r.original_name ? `<span>📄 ${esc(r.original_name)}</span>` : ''}
+            ${r.file_size ? `<span>大小:${fmtSize(r.file_size)}</span>` : ''}
             <span>上传:${esc(r.uploader ? r.uploader.display_name : '?')}</span>
             ${(r.tags || []).map(t => `<span class="tag-pill">${esc(t.name)}</span>`).join('')}
           </div>
-          ${r.author_id === getMyId() ? '' : ''}
+          ${r.description ? `<div class="content-preview">${esc(r.description)}</div>` : ''}
+          <div class="actions">
+            ${r.download_url ? `<a class="btn" href="${esc(r.download_url)}" download>⬇ 下载</a>` : ''}
+            ${r.preview && r.preview.supported ? `<button class="btn" onclick="Resources.preview('${r.id}')">👁 预览</button>` : ''}
+            <button class="btn ghost" onclick="Resources.del('${r.id}')">删除</button>
+          </div>
         </div>`).join('');
     } catch (e) { document.getElementById('res-list').innerHTML = `<div class="empty">${esc(errMsg(e))}</div>`; }
   },
   showCreate() {
-    const modal = document.getElementById('editor-modal');
-    document.getElementById('editor-title').textContent = '新建资源';
-    document.getElementById('doc-id').value = 'RESOURCE';
-    document.getElementById('doc-title').value = '';
-    document.getElementById('doc-content').value = '';
-    document.getElementById('doc-visibility').value = 'link';
-    document.getElementById('doc-tags').value = '';
-    showMsg('editor-msg', '');
-    modal.classList.remove('hidden');
-    document.getElementById('doc-content').placeholder = 'URL(link) 或 DOI/arXiv(paper)…';
+    document.getElementById('res-editor-title').textContent = '新建链接';
+    document.getElementById('res-type').value = 'link';
+    document.getElementById('res-title').value = '';
+    document.getElementById('res-url').value = '';
+    document.getElementById('res-description').value = '';
+    document.getElementById('res-file').value = '';
+    document.getElementById('res-file').style.display = 'none';
+    document.getElementById('res-url').style.display = '';
+    loadTagPicker('res-tag-picker', []);
+    showMsg('res-msg', '');
+    document.getElementById('resource-modal').classList.remove('hidden');
+    document.getElementById('res-type').onchange = () => {
+      const t = document.getElementById('res-type').value;
+      document.getElementById('res-editor-title').textContent = t === 'link' ? '新建链接' : '上传文件';
+      document.getElementById('res-url').style.display = t === 'link' ? '' : 'none';
+      document.getElementById('res-file').style.display = t === 'file' ? '' : 'none';
+    };
   },
-  async upload(input) {
-    const file = input.files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append('file', file);
+  closeCreate() { document.getElementById('resource-modal').classList.add('hidden'); },
+  async saveCreate() {
+    const type = document.getElementById('res-type').value;
+    const title = document.getElementById('res-title').value.trim();
+    const description = document.getElementById('res-description').value.trim();
+    const tag_ids = selectedTagIds('res-tag-picker');
     try {
-      await fetch('/api/resources/upload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: form });
-      alert('上传成功');
-      this.load();
+      if (type === 'link') {
+        const url = document.getElementById('res-url').value.trim();
+        await api('/resources', { method: 'POST', body: { type: 'link', title, url, description, tag_ids } });
+      } else {
+        const file = document.getElementById('res-file').files[0];
+        if (!file) throw new Error('请选择文件');
+        const form = new FormData();
+        form.append('file', file);
+        if (title) form.append('title', title);
+        if (description) form.append('description', description);
+        if (tag_ids.length) form.append('tag_ids', JSON.stringify(tag_ids));
+        const res = await fetch('/api/resources/upload', {
+          method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: form, credentials: 'same-origin',
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error((data && data.error && data.error.message) || ('HTTP ' + res.status));
+        }
+      }
+      this.closeCreate();
+      this.render();
+    } catch (e) { showMsg('res-msg', errMsg(e)); }
+  },
+  async preview(id) {
+    try {
+      const d = await api('/resources/' + id);
+      const r = d.resource;
+      if (!r.preview || !r.preview.supported) return;
+      // 新窗口打开预览(后端以 inline 返回,文本/图片/PDF/视频由浏览器渲染)
+      window.open(r.preview.url, '_blank');
     } catch (e) { alert(errMsg(e)); }
   },
+  async del(id) {
+    if (!confirm('确定删除该资源?')) return;
+    try { await api('/resources/' + id, { method: 'DELETE' }); this.load(); } catch (e) { alert(errMsg(e)); }
+  },
 };
+
+function fmtSize(n) {
+  if (n == null) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(1) + ' GB';
+}
 
 // ===== 项目 =====
 const Projects = {

@@ -101,7 +101,9 @@ console.log('== 5. 资源库 ==');
 try {
   await window.Resources.render();
   const listHTML = document.getElementById('res-list').innerHTML;
-  check('资源库渲染(空态文案)', listHTML.includes('暂无资源'), listHTML.slice(0, 120));
+  const okEmpty = listHTML.includes('暂无资源');
+  const okList = listHTML.includes('类型:链接') || listHTML.includes('类型:文件');
+  check('资源库渲染(空态或列表)', okEmpty || okList, listHTML.slice(0, 120));
 } catch (e) { check('资源库', false, e.message); }
 
 console.log('== 6. 项目 ==');

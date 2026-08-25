@@ -74,7 +74,7 @@ func TestSearch_VisibilityPerType(t *testing.T) {
 
 	createDoc(t, r, tokenA, "A的私密文献笔记", "private")
 	require.Equal(t, http.StatusCreated, doJSON(t, r, http.MethodPost, "/api/resources",
-		`{"type":"paper","title":"共享文献资源","doi":"10.1/x"}`, tokenA).Code)
+		`{"type":"link","title":"共享文献资源","url":"https://paper.example.com/x"}`, tokenA).Code)
 
 	w := doJSON(t, r, http.MethodGet, "/api/search?q=%E6%96%87%E7%8C%AE", "", tokenB)
 	require.Equal(t, http.StatusOK, w.Code)

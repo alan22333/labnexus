@@ -76,3 +76,11 @@ input, textarea, select { padding: 8px 12px; border: 1px solid var(--border); bo
 .doc-input { margin-bottom: 10px; }
 .result-group { margin-bottom: 20px; }
 .result-group h4 { margin-bottom: 8px; color: var(--muted); }
+
+/* 标签多选组件(发帖/资源共用) */
+.tag-picker-wrap { margin: 8px 0; }
+.tag-picker-label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+.tag-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-check { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.tag-check input { accent-color: var(--primary); }
+.tag-picker-empty { font-size: 12px; color: var(--muted); }

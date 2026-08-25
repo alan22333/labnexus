@@ -5,6 +5,14 @@
 -- 说明:开发期由 GORM AutoMigrate 建表,本文件是权威定义(供 review 与部署前 goose 基线迁移)
 -- ============================================================================
 
+-- v2 迁移说明(2026-08-25,F7 重写:去 paper 类型):
+--   AutoMigrate 只加列不删列,已有开发库需手工执行:
+--   ALTER TABLE resources DROP COLUMN IF EXISTS doi;
+--   ALTER TABLE resources DROP COLUMN IF EXISTS arxiv_id;
+--   ALTER TABLE resources DROP COLUMN IF EXISTS metadata;
+--   (description/original_name/mime_type/file_size 由 AutoMigrate 自动新增)
+
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
 
 -- ============================ 阶段 1:社区 MVP ============================
@@ -108,19 +116,20 @@ CREATE TABLE invite_codes (
 
 -- ===================== 阶段 2:资源库 + 项目任务 =====================
 
--- 资源(文件 / 链接 / 文献)
+-- 资源(链接 / 文件)
 CREATE TABLE resources (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type        VARCHAR(20) NOT NULL,  -- file / link / paper
-    title       VARCHAR(300) NOT NULL,
-    url         VARCHAR(500),          -- link / paper 的外链
-    file_path   VARCHAR(500),          -- file 类型:本地存储路径
-    doi         VARCHAR(200),          -- paper:DOI 标识
-    arxiv_id    VARCHAR(50),           -- paper:arXiv 标识
-    metadata    JSONB NOT NULL DEFAULT '{}', -- {authors, journal, year, ...} 由 F8 抓取填充
-    uploader_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type          VARCHAR(20) NOT NULL,  -- link / file
+    title         VARCHAR(300) NOT NULL,
+    description   TEXT NOT NULL DEFAULT '', -- 资源说明/用途/备注
+    url           VARCHAR(500),          -- link 类型:外部链接(仅 http/https)
+    file_path     VARCHAR(500),          -- file 类型:本地存储路径
+    original_name VARCHAR(255),          -- file 类型:用户上传的原始文件名
+    mime_type     VARCHAR(100),          -- file 类型:检测到的 MIME
+    file_size     BIGINT,                -- file 类型:字节数
+    uploader_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_resources_type ON resources(type);
 CREATE INDEX idx_resources_uploader ON resources(uploader_id);

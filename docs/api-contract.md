@@ -85,24 +85,39 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 
 ### F7 资源库
 
+资源类型:仅 `link` / `file`。论文以 PDF 形式作为 `file` 上传(`paper` 类型与 DOI/arXiv 抓取已废弃,见规格 f8-paper-meta.md,重做后再引入)。
+
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
-| GET | `/resources` | 🔐 | query:`type?, tag_id?, keyword?, page, page_size` | `{resources: [], pagination}` |
-| POST | `/resources` | 🔐 | `{type: link\|paper, title, url?, doi?, arxiv_id?, description?, tag_ids?}` | `201 {resource}` |
-| POST | `/resources/upload` | 🔐 | multipart:`file, title?, tag_ids?` | `201 {resource}` |
+| GET | `/resources` | 🔐 | query:`type?(link\|file), tag_id?, keyword?, page, page_size` | `{resources: [], pagination}` |
+| POST | `/resources` | 🔐 | `{type: link, title, url, description?, tag_ids?}` | `201 {resource}` |
+| POST | `/resources/upload` | 🔐 | multipart:`file, title?, description?, tag_ids?` | `201 {resource}` |
 | GET | `/resources/:id` | 🔐 | — | `{resource}` |
+| GET | `/resources/:id/download` | 🔐 | — | 文件流(`attachment`,仅 file) |
+| GET | `/resources/:id/preview` | 🔐 | — | 文件流(`inline`,仅 file 且支持预览) |
 | PATCH | `/resources/:id` | ✍️或👑 | `{title?, description?, tag_ids?}` | `{resource}` |
 | DELETE | `/resources/:id` | ✍️或👑 | — | `204` |
 
-`resource` 结构:`{id, type, title, url, doi, arxiv_id, metadata:{authors,journal,year}, uploader:{id,display_name}, tags:[], created_at}`
+`resource` 结构:
 
-### F8 文献元数据抓取
+```json
+{
+  "id": "...", "type": "link|file", "title": "...", "description": "...",
+  "url": "...",             // 仅 link
+  "original_name": "...",   // 仅 file
+  "mime_type": "...",       // 仅 file,如 application/pdf
+  "file_size": 12345,       // 仅 file,单位 byte
+  "preview": {"supported": true, "type": "pdf", "url": "/api/resources/:id/preview"},
+  "download_url": "/api/resources/:id/download",
+  "uploader": {"id": "...", "display_name": "..."}, "tags": [], 
+  "created_at": "...", "updated_at": "..."
+}
+```
 
-| 方法 | 路径 | 权限 | 请求体 | 响应 |
-|---|---|---|---|---|
-| GET | `/resources/paper/meta` | 🔐 | query:`doi=? 或 arxiv_id=?` | `{title, authors:[], journal?, year?, doi?, arxiv_id?}` |
-
-服务端调 Crossref / arXiv API,失败返回 `{error}` 由前端提示手动填写。
+- `url` 校验:仅允许 `http://` / `https://` 且可解析,否则 400 `VALIDATION`;
+- 文件上传:扩展名白名单 + 内容 MIME 双校验;大小上限:普通文件 50MB、视频(mp4/webm)100MB,超限 400 `VALIDATION`;
+- 预览支持:`pdf` / 图片(`png/jpg/jpeg/webp/gif`) / 文本(`txt/md`) / 视频(`mp4/webm`);Word/PPT/Excel/压缩包仅下载,预览返回 400 `PREVIEW_UNSUPPORTED`;
+- 下载/预览仅 `file` 类型;`link` 调用返回 400 `VALIDATION`;任意登录用户可用(资源共享)。
 
 ### F9 项目与任务
 

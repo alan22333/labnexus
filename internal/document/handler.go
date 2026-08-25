@@ -160,8 +160,8 @@ func (h *Handler) ListComments(c *gin.Context) {
 }
 
 type createCommentReq struct {
-	Content    string  `json:"content"`
-	ReplyToID  *string `json:"reply_to_id"`
+	Content   string  `json:"content"`
+	ReplyToID *string `json:"reply_to_id"`
 }
 
 func (h *Handler) CreateComment(c *gin.Context) {
@@ -189,12 +189,12 @@ func (h *Handler) DeleteComment(c *gin.Context) {
 // ---- F5 标签内容页 ----
 
 func (h *Handler) TagContents(c *gin.Context) {
-	views, err := h.svc.ListByTag(c.Request.Context(), h.userID(c), c.Param("id"))
+	result, err := h.svc.TagContents(c.Request.Context(), h.userID(c), c.Param("id"))
 	if err != nil {
 		respondServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"documents": views})
+	c.JSON(http.StatusOK, result)
 }
 
 // ---- F6 搜索 ----

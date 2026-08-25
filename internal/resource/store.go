@@ -14,8 +14,10 @@ import (
 
 // FileStore 文件存储接口(测试可用内存替身)
 type FileStore interface {
-	// Save 保存文件,返回内部相对路径(如 uploads/xxx.pdf)。
-	Save(reader io.Reader, filename string) (string, error)
+	// Save 保存文件,返回内部相对路径(如 uploads/xxx.pdf)与真实字节数。
+	Save(reader io.Reader, filename string) (path string, size int64, err error)
+	// Open 打开已保存的文件(相对路径来自 Save 返回值);供下载/预览。
+	Open(path string) (io.ReadSeekCloser, error)
 	// Delete 删除已保存的文件(路径来自 Save 返回值)。
 	Delete(path string) error
 }
@@ -33,8 +35,8 @@ func NewLocalFileStore(baseDir string) (*LocalFileStore, error) {
 	return &LocalFileStore{baseDir: baseDir}, nil
 }
 
-// Save 用随机文件名保存,避免覆盖与路径注入。
-func (s *LocalFileStore) Save(reader io.Reader, filename string) (string, error) {
+// Save 用随机文件名保存,避免覆盖与路径注入;返回真实字节数。
+func (s *LocalFileStore) Save(reader io.Reader, filename string) (string, int64, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if len(ext) > 10 {
 		ext = ""
@@ -43,13 +45,27 @@ func (s *LocalFileStore) Save(reader io.Reader, filename string) (string, error)
 	abs := filepath.Join(s.baseDir, filepath.Base(rel))
 	f, err := os.Create(abs)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, reader); err != nil {
-		return "", err
+	n, err := io.Copy(f, reader)
+	if err != nil {
+		return "", 0, err
 	}
-	return rel, nil
+	return rel, n, nil
+}
+
+// Open 打开文件(相对路径;防目录穿越,只允许 baseDir 内)。
+func (s *LocalFileStore) Open(path string) (io.ReadSeekCloser, error) {
+	if path == "" {
+		return nil, errors.New("empty file path")
+	}
+	abs := filepath.Join(s.baseDir, filepath.Base(path))
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 // Delete 删除文件;不存在视为成功(幂等)。

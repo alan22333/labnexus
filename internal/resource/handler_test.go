@@ -80,6 +80,8 @@ func TestResource_RequiresAuth(t *testing.T) {
 		{http.MethodGet, "/api/resources"},
 		{http.MethodPost, "/api/resources"},
 		{http.MethodGet, "/api/resources/x"},
+		{http.MethodGet, "/api/resources/x/download"},
+		{http.MethodGet, "/api/resources/x/preview"},
 	} {
 		w := resDo(t, r, tc.method, tc.path, "", "")
 		assert.Equal(t, http.StatusUnauthorized, w.Code, "%s %s", tc.method, tc.path)
@@ -92,12 +94,14 @@ func TestResource_CreateLink(t *testing.T) {
 	tg := f.seedTag("文献")
 
 	w := resDo(t, r, http.MethodPost, "/api/resources",
-		fmt.Sprintf(`{"type":"link","title":"好文章","url":"https://e.com/a","tag_ids":["%s"]}`, tg.ID),
+		fmt.Sprintf(`{"type":"link","title":"好文章","url":"https://e.com/a","description":"值得读","tag_ids":["%s"]}`, tg.ID),
 		authHeader(userA))
 	require.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
 	assert.Contains(t, w.Body.String(), `"type":"link"`)
 	assert.Contains(t, w.Body.String(), `"title":"好文章"`)
+	assert.Contains(t, w.Body.String(), `"description":"值得读"`)
 	assert.Contains(t, w.Body.String(), `"uploader"`)
+	assert.Contains(t, w.Body.String(), `"preview":{"supported":false}`)
 }
 
 func TestResource_CreateValidation(t *testing.T) {
@@ -110,15 +114,20 @@ func TestResource_CreateValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "VALIDATION")
 
-	// paper 缺 doi/arxiv
+	// link url 非法协议
 	w2 := resDo(t, r, http.MethodPost, "/api/resources",
-		`{"type":"paper","title":"x"}`, authHeader(userA))
+		`{"type":"link","title":"x","url":"javascript:alert(1)"}`, authHeader(userA))
 	assert.Equal(t, http.StatusBadRequest, w2.Code)
 
-	// 非法 type
+	// paper 已废弃 → 非法 type
 	w3 := resDo(t, r, http.MethodPost, "/api/resources",
-		`{"type":"video","title":"x","url":"https://e.com"}`, authHeader(userA))
+		`{"type":"paper","title":"x"}`, authHeader(userA))
 	assert.Equal(t, http.StatusBadRequest, w3.Code)
+
+	// 非法 type
+	w4 := resDo(t, r, http.MethodPost, "/api/resources",
+		`{"type":"video","title":"x","url":"https://e.com"}`, authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w4.Code)
 }
 
 func TestResource_UploadFile(t *testing.T) {
@@ -128,11 +137,20 @@ func TestResource_UploadFile(t *testing.T) {
 	w := multipartUpload(t, r, "/api/resources/upload", "paper.pdf", "%PDF-1.4", authHeader(userA))
 	require.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
 	assert.Contains(t, w.Body.String(), `"type":"file"`)
+	assert.Contains(t, w.Body.String(), `"mime_type":"application/pdf"`)
+	assert.Contains(t, w.Body.String(), `"file_size":`)
+	assert.Contains(t, w.Body.String(), `"original_name":"paper.pdf"`)
+	assert.Contains(t, w.Body.String(), `"preview":{"supported":true,"type":"pdf"`)
+	assert.Contains(t, w.Body.String(), `"download_url"`)
 	assert.NotContains(t, w.Body.String(), `"file_path"`, "file_path 不应暴露")
 
 	// 非法扩展名
 	w2 := multipartUpload(t, r, "/api/resources/upload", "evil.exe", "MZ", authHeader(userA))
 	assert.Equal(t, http.StatusBadRequest, w2.Code)
+
+	// 内容与扩展名不符
+	w3 := multipartUpload(t, r, "/api/resources/upload", "fake.pdf", "MZ\x90\x00not pdf", authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w3.Code)
 }
 
 func TestResource_ListAndGet(t *testing.T) {
@@ -140,18 +158,17 @@ func TestResource_ListAndGet(t *testing.T) {
 	f.seedUser(userA, user.RoleStudent)
 	resDo(t, r, http.MethodPost, "/api/resources",
 		`{"type":"link","title":"深度学习入门","url":"https://e.com/a"}`, authHeader(userA))
-	resDo(t, r, http.MethodPost, "/api/resources",
-		`{"type":"paper","title":"Attention","doi":"10.1/x"}`, authHeader(userA))
+	multipartUpload(t, r, "/api/resources/upload", "attention.pdf", "%PDF-1.4", authHeader(userA))
 
 	// 列表 + type 筛选
 	w := resDo(t, r, http.MethodGet, "/api/resources?type=link", "", authHeader(userA))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "深度学习入门")
-	assert.NotContains(t, w.Body.String(), "Attention")
+	assert.NotContains(t, w.Body.String(), "attention")
 
 	// keyword 筛选
 	w2 := resDo(t, r, http.MethodGet, "/api/resources?keyword=attention", "", authHeader(userA))
-	assert.Contains(t, w2.Body.String(), "Attention")
+	assert.Contains(t, w2.Body.String(), "attention")
 
 	// 详情
 	var list struct {
@@ -163,6 +180,83 @@ func TestResource_ListAndGet(t *testing.T) {
 	require.NotEmpty(t, list.Resources)
 	w3 := resDo(t, r, http.MethodGet, "/api/resources/"+list.Resources[0].ID, "", authHeader(userA))
 	require.Equal(t, http.StatusOK, w3.Code)
+}
+
+func TestResource_Download(t *testing.T) {
+	r, f := newTestRouter(t)
+	f.seedUser(userA, user.RoleStudent)
+	f.seedUser("user-b", user.RoleStudent)
+
+	// 上传文件,取 ID
+	w := multipartUpload(t, r, "/api/resources/upload", "论文.pdf", "%PDF-1.4 download", authHeader(userA))
+	var created struct {
+		Resource struct {
+			ID           string `json:"id"`
+			OriginalName string `json:"original_name"`
+		} `json:"resource"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+
+	// 任意登录用户可下载
+	w2 := resDo(t, r, http.MethodGet, "/api/resources/"+created.Resource.ID+"/download", "", authHeader("user-b"))
+	require.Equal(t, http.StatusOK, w2.Code, "%s", w2.Body.String())
+	assert.Equal(t, "attachment", w2.Header().Get("Content-Disposition")[:10])
+	assert.Contains(t, w2.Header().Get("Content-Disposition"), created.Resource.OriginalName)
+	assert.Equal(t, "%PDF-1.4 download", w2.Body.String())
+
+	// link 不支持下载 → 400
+	link := resDo(t, r, http.MethodPost, "/api/resources",
+		`{"type":"link","title":"x","url":"https://e.com"}`, authHeader(userA))
+	var linkRes struct {
+		Resource struct {
+			ID string `json:"id"`
+		} `json:"resource"`
+	}
+	require.NoError(t, json.Unmarshal(link.Body.Bytes(), &linkRes))
+	w3 := resDo(t, r, http.MethodGet, "/api/resources/"+linkRes.Resource.ID+"/download", "", authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w3.Code)
+}
+
+func TestResource_Preview(t *testing.T) {
+	r, f := newTestRouter(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	// pdf → inline 预览
+	w := multipartUpload(t, r, "/api/resources/upload", "paper.pdf", "%PDF-1.4 preview", authHeader(userA))
+	var created struct {
+		Resource struct {
+			ID string `json:"id"`
+		} `json:"resource"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	w2 := resDo(t, r, http.MethodGet, "/api/resources/"+created.Resource.ID+"/preview", "", authHeader(userA))
+	require.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "inline", w2.Header().Get("Content-Disposition")[:6])
+	assert.Equal(t, "%PDF-1.4 preview", w2.Body.String())
+
+	// docx(不支持预览)→ 400 PREVIEW_UNSUPPORTED
+	w3 := multipartUpload(t, r, "/api/resources/upload", "doc.docx", "PK\x03\x04 not really docx", authHeader(userA))
+	var docxRes struct {
+		Resource struct {
+			ID string `json:"id"`
+		} `json:"resource"`
+	}
+	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &docxRes))
+	w4 := resDo(t, r, http.MethodGet, "/api/resources/"+docxRes.Resource.ID+"/preview", "", authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w4.Code)
+	assert.Contains(t, w4.Body.String(), "PREVIEW_UNSUPPORTED")
+
+	// link 不支持预览 → 400
+	link := resDo(t, r, http.MethodPost, "/api/resources",
+		`{"type":"link","title":"x","url":"https://e.com"}`, authHeader(userA))
+	var linkRes struct {
+		Resource struct {
+			ID string `json:"id"`
+		} `json:"resource"`
+	}
+	require.NoError(t, json.Unmarshal(link.Body.Bytes(), &linkRes))
+	w5 := resDo(t, r, http.MethodGet, "/api/resources/"+linkRes.Resource.ID+"/preview", "", authHeader(userA))
+	assert.Equal(t, http.StatusBadRequest, w5.Code)
 }
 
 func TestResource_Permission(t *testing.T) {
@@ -192,22 +286,4 @@ func TestResource_Permission(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, wAdmin.Code)
 }
 
-func TestResource_PaperMeta(t *testing.T) {
-	r, f := newTestRouter(t)
-	f.seedUser(userA, user.RoleStudent)
-	// mock 外部服务
-	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"message":{"title":["Meta Paper"],"author":[{"given":"A","family":"B"}],"DOI":"10.1/meta"}}`))
-	}))
-	defer mock.Close()
-	f.svc.WithEndpoints(mock.Client(), mock.URL, mock.URL)
-
-	w := resDo(t, r, http.MethodGet, "/api/resources/paper/meta?doi=10.1/meta", "", authHeader(userA))
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "Meta Paper")
-
-	// 无参数 → 400
-	w2 := resDo(t, r, http.MethodGet, "/api/resources/paper/meta", "", authHeader(userA))
-	assert.Equal(t, http.StatusBadRequest, w2.Code)
-}
+var _ = json.Marshal

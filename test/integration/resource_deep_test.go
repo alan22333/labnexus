@@ -24,14 +24,14 @@ func TestResource_DeepFilters(t *testing.T) {
 	tag1 := createTag(t, r, tokenA, "深度学习")
 	tag2 := createTag(t, r, tokenA, "NLP")
 
-	// 4 条资源:2 link(不同标签/关键词)、1 paper、1 file
+	// 4 条资源:2 link(不同标签/关键词)、1 file(pdf)、1 file(md)
 	for _, body := range []string{
 		`{"type":"link","title":"深度学习入门","url":"https://a.com","tag_ids":["` + tag1 + `"]}`,
 		`{"type":"link","title":"NLP 综述","url":"https://b.com","tag_ids":["` + tag2 + `"]}`,
-		`{"type":"paper","title":"Attention 论文","doi":"10.1/attn"}`,
 	} {
 		require.Equal(t, http.StatusCreated, doJSON(t, r, http.MethodPost, "/api/resources", body, tokenA).Code)
 	}
+	require.Equal(t, http.StatusCreated, doMultipart(t, r, "/api/resources/upload", "Attention.pdf", "%PDF-1.4 attention", tokenA).Code)
 	require.Equal(t, http.StatusCreated, doMultipart(t, r, "/api/resources/upload", "笔记.md", "# note", tokenA).Code)
 
 	// 组合筛选:type=link AND keyword=深度
@@ -98,7 +98,7 @@ func TestResource_FileLifecycle(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "删除资源后磁盘文件应被清理")
 }
 
-// 上传边界:非法扩展名、超大文件
+// 上传边界:非法扩展名、内容不符、超大文件、预览支持判定
 func TestResource_UploadBoundaries(t *testing.T) {
 	r := setupServer(t)
 	tokenA := registerUser(t, r, "alice", "Alice")
@@ -106,8 +106,11 @@ func TestResource_UploadBoundaries(t *testing.T) {
 	// 非法扩展名
 	assert.Equal(t, http.StatusBadRequest, doMultipart(t, r, "/api/resources/upload", "malware.sh", "#!/bin/sh", tokenA).Code)
 
-	// 超大文件(> 20MB)
-	big := strings.Repeat("x", 21<<20)
+	// 内容与扩展名不符(改名的可执行文件)
+	assert.Equal(t, http.StatusBadRequest, doMultipart(t, r, "/api/resources/upload", "fake.pdf", "MZ\x90\x00not pdf", tokenA).Code)
+
+	// 超大文件(> 50MB)
+	big := strings.Repeat("x", 51<<20)
 	assert.Equal(t, http.StatusBadRequest, doMultipart(t, r, "/api/resources/upload", "big.pdf", big, tokenA).Code)
 
 	// 上传后列表/详情不含 file_path(契约:内部路径不暴露)

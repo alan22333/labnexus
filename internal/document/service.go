@@ -64,6 +64,7 @@ type Service struct {
 
 	resourceSearch ResourceSearchFn // 可选:资源搜索(阶段 2)
 	taskSearch     TaskSearchFn     // 可选:任务搜索(阶段 2)
+	resourceByTag  ResourceByTagFn  // 可选:标签资源列表(阶段 2 F7)
 }
 
 // NewService 构造函数(依赖注入)
@@ -254,8 +255,8 @@ func (s *Service) ListMyDocuments(ctx context.Context, userID string, folderID *
 	return s.buildViews(ctx, docs)
 }
 
-// ListByTag 标签内容页(F5):打了该标签的文档,可见性过滤(公开或本人)。
-func (s *Service) ListByTag(ctx context.Context, userID, tagID string) ([]*DocumentView, error) {
+// TagContents 标签内容页(F5):打了该标签的文档(可见性过滤)与资源(全组可见)。
+func (s *Service) TagContents(ctx context.Context, userID, tagID string) (*TagContentsResult, error) {
 	if _, err := s.tags.GetByID(ctx, tagID); err != nil {
 		return nil, tag.ErrTagNotFound
 	}
@@ -269,7 +270,29 @@ func (s *Service) ListByTag(ctx context.Context, userID, tagID string) ([]*Docum
 			visible = append(visible, d)
 		}
 	}
-	return s.buildViews(ctx, visible)
+	docViews, err := s.buildViews(ctx, visible)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &TagContentsResult{Documents: docViews, Resources: []*resource.ResourceView{}}
+	if s.resourceByTag != nil {
+		views, err := s.resourceByTag(ctx, tagID)
+		if err != nil {
+			return nil, err
+		}
+		if views == nil {
+			views = []*resource.ResourceView{}
+		}
+		res.Resources = views
+	}
+	return res, nil
+}
+
+// TagContentsResult 标签内容页聚合结果(文档 + 资源)
+type TagContentsResult struct {
+	Documents []*DocumentView          `json:"documents"`
+	Resources []*resource.ResourceView `json:"resources"`
 }
 
 // ---- F4:信息流 ----
@@ -354,9 +377,9 @@ func (s *Service) DeleteComment(ctx context.Context, userID, commentID string) e
 
 // SearchResult 搜索结果(三组结构固定;资源/任务由阶段 2 搜索器注入)
 type SearchResult struct {
-	Documents []*DocumentView       `json:"documents"`
-	Resources []*resource.Resource  `json:"resources"`
-	Tasks     []*project.Task       `json:"tasks"`
+	Documents []*DocumentView      `json:"documents"`
+	Resources []*resource.Resource `json:"resources"`
+	Tasks     []*project.Task      `json:"tasks"`
 }
 
 // ResourceSearchFn 资源搜索器(由 app 装配注入,阶段 2 F7)
@@ -369,6 +392,15 @@ type TaskSearchFn func(ctx context.Context, q string, limit int) ([]*project.Tas
 func (s *Service) WithSearchProviders(resFn ResourceSearchFn, taskFn TaskSearchFn) *Service {
 	s.resourceSearch = resFn
 	s.taskSearch = taskFn
+	return s
+}
+
+// ResourceByTagFn 按标签列出资源(由 app 装配注入,F7)。
+type ResourceByTagFn func(ctx context.Context, tagID string) ([]*resource.ResourceView, error)
+
+// WithResourceByTag 注入标签资源列表器(/tags/:id/contents 聚合资源)。
+func (s *Service) WithResourceByTag(fn ResourceByTagFn) *Service {
+	s.resourceByTag = fn
 	return s
 }
 

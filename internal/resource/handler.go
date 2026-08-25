@@ -1,11 +1,13 @@
-// Package resource HTTP 层:F7 资源库 + F8 文献元数据(契约 docs/api-contract.md §F7/§F8)。
+// Package resource HTTP 层:F7 资源库(link + file;契约 docs/api-contract.md §F7)。
 package resource
 
 import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -22,7 +24,7 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// RegisterRoutes 注册 F7/F8 路由(注意:paper/meta 静态路由须在 :id 之前注册)
+// RegisterRoutes 注册 F7 路由(注意:download/preview 为 :id 的子路径,无冲突)
 func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed := r.Group("/api")
 	authed.Use(middleware.AuthRequired(secret))
@@ -30,8 +32,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed.GET("/resources", h.List)
 	authed.POST("/resources", h.Create)
 	authed.POST("/resources/upload", h.Upload)
-	authed.GET("/resources/paper/meta", h.PaperMeta) // 静态路由在前
 	authed.GET("/resources/:id", h.Get)
+	authed.GET("/resources/:id/download", h.Download)
+	authed.GET("/resources/:id/preview", h.Preview)
 	authed.PATCH("/resources/:id", h.Update)
 	authed.DELETE("/resources/:id", h.Delete)
 }
@@ -65,40 +68,26 @@ func (h *Handler) List(c *gin.Context) {
 	})
 }
 
-// Create 创建 link/paper 资源
+// Create 创建 link 资源(paper 已废弃)
 func (h *Handler) Create(c *gin.Context) {
-	// 平铺请求结构(避免嵌入结构同名字段冲突导致 JSON 解析丢失)
 	var req struct {
-		Type     string         `json:"type"`
-		Title    string         `json:"title"`
-		URL      string         `json:"url"`
-		DOI      string         `json:"doi"`
-		ArxivID  string         `json:"arxiv_id"`
-		Metadata map[string]any `json:"metadata"`
-		TagIDs   []string       `json:"tag_ids"`
+		Type        string   `json:"type"`
+		Title       string   `json:"title"`
+		URL         string   `json:"url"`
+		Description string   `json:"description"`
+		TagIDs      []string `json:"tag_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "VALIDATION", "invalid request body")
 		return
 	}
-	var (
-		view *ResourceView
-		err  error
-	)
-	switch req.Type {
-	case TypeLink:
-		view, err = h.svc.CreateLink(c.Request.Context(), h.userID(c), CreateLinkRequest{
-			Title: req.Title, URL: req.URL, TagIDs: req.TagIDs,
-		})
-	case TypePaper:
-		view, err = h.svc.CreatePaper(c.Request.Context(), h.userID(c), CreatePaperRequest{
-			Title: req.Title, DOI: req.DOI, ArxivID: req.ArxivID,
-			Metadata: req.Metadata, TagIDs: req.TagIDs,
-		})
-	default:
+	if req.Type != TypeLink {
 		respondError(c, http.StatusBadRequest, "VALIDATION", ErrInvalidType.Error())
 		return
 	}
+	view, err := h.svc.CreateLink(c.Request.Context(), h.userID(c), CreateLinkRequest{
+		Title: req.Title, URL: req.URL, Description: req.Description, TagIDs: req.TagIDs,
+	})
 	if err != nil {
 		respondServiceError(c, err)
 		return
@@ -106,15 +95,14 @@ func (h *Handler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"resource": view})
 }
 
-// Upload 上传文件资源(multipart: file 必填,title/tag_ids 可选)
+// Upload 上传文件资源(multipart: file 必填,title/description/tag_ids 可选)
 func (h *Handler) Upload(c *gin.Context) {
+	// 整体请求体上限,防伪造大小/超大上传
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadBody)
+
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		respondError(c, http.StatusBadRequest, "VALIDATION", "file field is required")
-		return
-	}
-	if fileHeader.Size > MaxFileSize {
-		respondError(c, http.StatusBadRequest, "VALIDATION", ErrFileTooLarge.Error())
 		return
 	}
 	f, err := fileHeader.Open()
@@ -133,22 +121,12 @@ func (h *Handler) Upload(c *gin.Context) {
 	}
 
 	view, err := h.svc.UploadFile(c.Request.Context(), h.userID(c),
-		fileHeader.Filename, f, c.PostForm("title"), tagIDs)
+		fileHeader.Filename, f, c.PostForm("title"), c.PostForm("description"), tagIDs)
 	if err != nil {
 		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"resource": view})
-}
-
-// PaperMeta 文献元数据抓取(F8)
-func (h *Handler) PaperMeta(c *gin.Context) {
-	meta, err := h.svc.FetchPaperMeta(c.Request.Context(), c.Query("doi"), c.Query("arxiv_id"))
-	if err != nil {
-		respondServiceError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"metadata": meta})
 }
 
 // Get 资源详情
@@ -159,6 +137,44 @@ func (h *Handler) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"resource": view})
+}
+
+// Download 下载文件(仅 file;attachment + 原始文件名)
+func (h *Handler) Download(c *gin.Context) {
+	res, file, err := h.svc.OpenFile(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	defer file.Close()
+
+	name := sanitizeFilename(res.OriginalName)
+	c.Header("Content-Type", res.MimeType)
+	c.Header("Content-Disposition", `attachment; filename="`+name+`"`)
+	http.ServeContent(c.Writer, c.Request, name, res.UpdatedAt, file)
+}
+
+// Preview 预览文件(仅 file 且支持预览类型;inline)
+func (h *Handler) Preview(c *gin.Context) {
+	res, file, err := h.svc.OpenFile(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	defer file.Close()
+
+	name := sanitizeFilename(res.OriginalName)
+	if _, ok := previewByExt[strings.ToLower(path.Ext(res.OriginalName))]; !ok {
+		respondError(c, http.StatusBadRequest, "PREVIEW_UNSUPPORTED", ErrPreviewUnsupported.Error())
+		return
+	}
+	contentType := res.MimeType
+	if strings.HasPrefix(res.MimeType, "text/") {
+		contentType = "text/plain; charset=utf-8" // 防 HTML 注入
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", `inline; filename="`+name+`"`)
+	http.ServeContent(c.Writer, c.Request, name, res.UpdatedAt, file)
 }
 
 // Update 修改资源
@@ -199,19 +215,33 @@ func NormalizePage(page, pageSize int) (int, int) {
 	return page, pageSize
 }
 
+// sanitizeFilename 去除文件名中的路径分隔符与引号,防止 header 注入。
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, `"`, `'`)
+	name = strings.ReplaceAll(name, "\r", "")
+	name = strings.ReplaceAll(name, "\n", "")
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, `\`, "_")
+	return name
+}
+
 func respondServiceError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, ErrResourceNotFound), errors.Is(err, ErrPaperMetaNotFound):
+	case errors.Is(err, ErrResourceNotFound):
 		respondError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, ErrResourceForbidden):
 		respondError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
-	case errors.Is(err, ErrPaperMetaUpstream):
-		respondError(c, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 	case errors.Is(err, ErrInvalidType), errors.Is(err, ErrTitleEmpty),
-		errors.Is(err, ErrURLRequired), errors.Is(err, ErrDOIOrArxivRequired),
-		errors.Is(err, ErrFileTooLarge), errors.Is(err, ErrFileTypeNotAllowed),
+		errors.Is(err, ErrURLRequired), errors.Is(err, ErrInvalidURL),
+		errors.Is(err, ErrNotFile), errors.Is(err, ErrFileTooLarge),
+		errors.Is(err, ErrFileTypeNotAllowed), errors.Is(err, ErrFileContentMismatch),
+		errors.Is(err, ErrPreviewUnsupported),
 		errors.Is(err, tag.ErrTagNotFound):
-		respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())
+		code := "VALIDATION"
+		if errors.Is(err, ErrPreviewUnsupported) {
+			code = "PREVIEW_UNSUPPORTED"
+		}
+		respondError(c, http.StatusBadRequest, code, err.Error())
 	default:
 		respondError(c, http.StatusInternalServerError, "INTERNAL", "internal error")
 	}

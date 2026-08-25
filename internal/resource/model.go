@@ -1,5 +1,6 @@
-// Package resource 资源库域:F7 文件/链接/文献统一入库 + 标签检索。
+// Package resource 资源库域:F7 链接/文件统一入库 + 标签检索。
 // 资源共享(全组可见);修改/删除仅上传者或 admin。
+// v2(2026-08-25):去掉 paper 类型与 DOI/arXiv/metadata,新增 description/original_name/mime_type/file_size。
 package resource
 
 import (
@@ -9,35 +10,34 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"labnexus/internal/database"
 )
 
-// 资源类型
+// 资源类型(v2:仅 link/file;paper 重做后再引入)
 const (
-	TypeLink  = "link"
-	TypePaper = "paper"
-	TypeFile  = "file"
+	TypeLink = "link"
+	TypeFile = "file"
 )
 
 // ErrNotFound 记录不存在
 var ErrNotFound = errors.New("resource: not found")
 
-// Resource 资源(schema.sql: resources;metadata JSONB)
+// Resource 资源(schema.sql: resources)
 type Resource struct {
-	ID         string         `gorm:"type:uuid;primaryKey" json:"id"`
-	Type       string         `gorm:"size:20" json:"type"`
-	Title      string         `gorm:"size:300" json:"title"`
-	URL        string         `gorm:"size:500" json:"url,omitempty"`
-	FilePath   string         `gorm:"size:500" json:"-"`
-	DOI        string         `gorm:"size:200" json:"doi,omitempty"`
-	ArxivID    string         `gorm:"size:50" json:"arxiv_id,omitempty"`
-	Metadata   datatypes.JSON `gorm:"type:jsonb" json:"metadata"`
-	UploaderID string         `gorm:"type:uuid;index" json:"uploader_id"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID           string    `gorm:"type:uuid;primaryKey" json:"id"`
+	Type         string    `gorm:"size:20" json:"type"`
+	Title        string    `gorm:"size:300" json:"title"`
+	Description  string    `gorm:"type:text" json:"description"`
+	URL          string    `gorm:"size:500" json:"url,omitempty"`
+	FilePath     string    `gorm:"size:500" json:"-"`
+	OriginalName string    `gorm:"size:255" json:"original_name,omitempty"`
+	MimeType     string    `gorm:"size:100" json:"mime_type,omitempty"`
+	FileSize     int64     `json:"file_size,omitempty"`
+	UploaderID   string    `gorm:"type:uuid;index" json:"uploader_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // NewResource 构造资源。
@@ -47,7 +47,6 @@ func NewResource(typ, title string, uploaderID string) *Resource {
 		ID:         uuid.NewString(),
 		Type:       typ,
 		Title:      title,
-		Metadata:   datatypes.JSON(`{}`),
 		UploaderID: uploaderID,
 		CreatedAt:  now,
 		UpdatedAt:  now,

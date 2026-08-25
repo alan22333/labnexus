@@ -59,7 +59,7 @@
   </div>
 </div>
 
-<!-- 编辑器弹层 -->
+<!-- 文档编辑器弹层 -->
 <div id="editor-modal" class="modal hidden">
   <div class="modal-card">
     <h3 id="editor-title">新建文档</h3>
@@ -70,15 +70,44 @@
         <option value="private">私有(仅自己)</option>
         <option value="public">公开(发布到信息流)</option>
       </select>
-      <input id="doc-tags" placeholder="标签ID,逗号分隔(可留空)">
       <input type="hidden" id="doc-folder">
       <input type="hidden" id="doc-id">
+    </div>
+    <div class="tag-picker-wrap">
+      <label class="tag-picker-label">标签</label>
+      <div id="doc-tag-picker" class="tag-picker"></div>
     </div>
     <div class="editor-actions">
       <button class="btn ghost" onclick="Editor.close()">取消</button>
       <button class="btn primary" onclick="Editor.save()">保存</button>
     </div>
     <div id="editor-msg" class="msg"></div>
+  </div>
+</div>
+
+<!-- 资源编辑器弹层 -->
+<div id="resource-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="res-editor-title">新建链接</h3>
+    <div class="editor-row">
+      <select id="res-type">
+        <option value="link">链接</option>
+        <option value="file">文件</option>
+      </select>
+    </div>
+    <input id="res-title" placeholder="标题" class="doc-input">
+    <input id="res-url" placeholder="URL(仅 http/https)" class="doc-input">
+    <input id="res-description" placeholder="描述/备注(可选)" class="doc-input">
+    <input id="res-file" type="file" class="doc-input">
+    <div class="tag-picker-wrap">
+      <label class="tag-picker-label">标签</label>
+      <div id="res-tag-picker" class="tag-picker"></div>
+    </div>
+    <div class="editor-actions">
+      <button class="btn ghost" onclick="Resources.closeCreate()">取消</button>
+      <button class="btn primary" onclick="Resources.saveCreate()">保存</button>
+    </div>
+    <div id="res-msg" class="msg"></div>
   </div>
 </div>
 

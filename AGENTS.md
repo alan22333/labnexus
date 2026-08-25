@@ -30,9 +30,12 @@
 
 ## 当前状态与下一步
 
-- ✅ **阶段 0 完成**:骨架(可编译、可启动)+ 开发规范 + API 契约 + schema 已就绪,`make check` 全绿;
-- ⏳ **阶段 1 未开始**:F1~F6(社区 MVP);**F1 账号系统规格已评审待实现**(`docs/specs/f1-auth.md`);
-- ▶️ **下一步**:`git init` 提交基线(若尚未) → 按 `docs/specs/f1-auth.md` 实现 F1(**先写测试,再写实现**)。
+- ✅ **阶段 0 完成**:骨架、开发规范、API 契约与 schema 已就绪;
+- ✅ **阶段 1 完成**:F1~F6 社区 MVP 已实现并通过单元、handler、集成和前端检查;
+- ✅ **阶段 2 完成**:F7~F9 资源库(link/file + 下载/预览)、项目/任务已实现并通过集成测试(F8 文献元数据已废弃,重做后再引入);
+- ✅ **前端验证壳完成**:纯 HTML/JS shell、诊断、端到端和 smoke 流程已完成;
+- ▶️ **当前重点**:稳定化、部署准备和课题组试用增强，详细路线见 `docs/backend-roadmap.md`;
+- ⏸️ **F10~F20 暂缓**:除非触发条件满足且经人工确认，否则不进入开发。
 
 ## 铁律(违反即"跑偏",禁止)
 
@@ -68,7 +71,7 @@ make check     # 提交前全量门禁(vet+fmt+test+lint+build),必须全绿
 
 - **Docker daemon 可能未启动**:`make up` 前先启动 Docker Desktop;
 - **受限沙箱**:`scripts/check.sh` 已自动把 Go/lint 缓存指到工作区(`.gocache` 等),无需手工处理;若换环境(无 `.gocache` 目录),此适配自动不生效;
-- **数据库**:开发期 GORM AutoMigrate(模型尚未创建,阶段 1 建);正式部署前切换 goose,基线 = `docs/schema.sql`;
+- **数据库**:开发期仍使用 GORM AutoMigrate;正式部署前切换 goose,基线 = `docs/schema.sql`;
 - **git 状态**:尚未 init(若已 init 则跳过),首次提交前 `git init`。
 
 ## 提交规范

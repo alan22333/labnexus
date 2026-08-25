@@ -44,7 +44,7 @@ func (r *memUserRepo) GetByIDs(_ context.Context, ids []string) ([]*user.User, e
 	return out, nil
 }
 
-func (r *memUserRepo) Create(_ context.Context, u *user.User) error    { r.byID[u.ID] = u; return nil }
+func (r *memUserRepo) Create(_ context.Context, u *user.User) error { r.byID[u.ID] = u; return nil }
 func (r *memUserRepo) GetByUsername(_ context.Context, _ string) (*user.User, error) {
 	return nil, user.ErrNotFound
 }
@@ -56,7 +56,10 @@ type memSpaceRepo struct {
 
 func newMemSpaces() *memSpaceRepo { return &memSpaceRepo{byUser: map[string]*space.Space{}} }
 
-func (r *memSpaceRepo) Create(_ context.Context, s *space.Space) error { r.byUser[s.UserID] = s; return nil }
+func (r *memSpaceRepo) Create(_ context.Context, s *space.Space) error {
+	r.byUser[s.UserID] = s
+	return nil
+}
 func (r *memSpaceRepo) GetByUserID(_ context.Context, userID string) (*space.Space, error) {
 	s, ok := r.byUser[userID]
 	if !ok {
@@ -71,7 +74,10 @@ type memFolderRepo struct {
 
 func newMemFolders() *memFolderRepo { return &memFolderRepo{byID: map[string]*space.Folder{}} }
 
-func (r *memFolderRepo) Create(_ context.Context, f *space.Folder) error { r.byID[f.ID] = f; return nil }
+func (r *memFolderRepo) Create(_ context.Context, f *space.Folder) error {
+	r.byID[f.ID] = f
+	return nil
+}
 func (r *memFolderRepo) GetByID(_ context.Context, id string) (*space.Folder, error) {
 	f, ok := r.byID[id]
 	if !ok {
@@ -79,12 +85,14 @@ func (r *memFolderRepo) GetByID(_ context.Context, id string) (*space.Folder, er
 	}
 	return f, nil
 }
-func (r *memFolderRepo) ListBySpace(_ context.Context, _ string) ([]*space.Folder, error) { return nil, nil }
+func (r *memFolderRepo) ListBySpace(_ context.Context, _ string) ([]*space.Folder, error) {
+	return nil, nil
+}
 func (r *memFolderRepo) Update(_ context.Context, f *space.Folder) error {
 	r.byID[f.ID] = f
 	return nil
 }
-func (r *memFolderRepo) Delete(_ context.Context, _ string) error { return nil }
+func (r *memFolderRepo) Delete(_ context.Context, _ string) error                 { return nil }
 func (r *memFolderRepo) CountChildren(_ context.Context, _ string) (int64, error) { return 0, nil }
 
 type memTagRepo struct {
@@ -130,7 +138,9 @@ type memReactionRepo struct {
 	rows map[string]*document.Reaction // id -> reaction
 }
 
-func newMemReactions() *memReactionRepo { return &memReactionRepo{rows: map[string]*document.Reaction{}} }
+func newMemReactions() *memReactionRepo {
+	return &memReactionRepo{rows: map[string]*document.Reaction{}}
+}
 
 func (r *memReactionRepo) countByDoc(docID string) int64 {
 	var n int64
@@ -177,7 +187,10 @@ func (r *memCommentRepo) countByDoc(docID string) int64 {
 	return n
 }
 
-func (r *memCommentRepo) Create(_ context.Context, c *document.Comment) error { r.byID[c.ID] = c; return nil }
+func (r *memCommentRepo) Create(_ context.Context, c *document.Comment) error {
+	r.byID[c.ID] = c
+	return nil
+}
 func (r *memCommentRepo) GetByID(_ context.Context, id string) (*document.Comment, error) {
 	c, ok := r.byID[id]
 	if !ok {
@@ -211,7 +224,10 @@ func newMemDocs(reactions *memReactionRepo, comments *memCommentRepo) *memDocRep
 	}
 }
 
-func (r *memDocRepo) Create(_ context.Context, d *document.Document) error { r.byID[d.ID] = d; return nil }
+func (r *memDocRepo) Create(_ context.Context, d *document.Document) error {
+	r.byID[d.ID] = d
+	return nil
+}
 func (r *memDocRepo) GetByID(_ context.Context, id string) (*document.Document, error) {
 	d, ok := r.byID[id]
 	if !ok {
@@ -603,16 +619,17 @@ func TestListByTag_VisibilityFilter(t *testing.T) {
 		require.NoError(t, f.docs.SetTags(context.Background(), d.ID, []string{tg.ID}))
 	}
 
-	views, err := f.svc.ListByTag(context.Background(), userA, tg.ID)
+	result, err := f.svc.TagContents(context.Background(), userA, tg.ID)
 	require.NoError(t, err)
 	got := map[string]bool{}
-	for _, v := range views {
+	for _, v := range result.Documents {
 		got[v.Title] = true
 	}
 	assert.True(t, got["A公开"], "本人公开应出现")
 	assert.True(t, got["A私有"], "本人私有应出现")
 	assert.True(t, got["B公开"], "他人公开应出现")
 	assert.False(t, got["B私有"], "他人私有不应泄露")
+	assert.NotNil(t, result.Resources, "资源分组应始终存在(未注入时为空)")
 }
 
 // ---- F4:信息流 ----

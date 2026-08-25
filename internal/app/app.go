@@ -86,6 +86,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		tagRepo, fileStore, users,
 	).WithTxRunner(database.GormTxRunner(db))
 	resHandler := resource.NewHandler(resSvc)
+	docSvc.WithResourceByTag(resSvc.ListByTag)
 
 	// 阶段 2:F9 项目/任务
 	projectSvc := project.NewService(project.NewGormRepository(db), users).

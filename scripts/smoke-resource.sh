@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F7/F8 资源库/文献元数据 冒烟验收脚本(幂等)
+# F7 资源库(link + file)冒烟验收脚本(幂等)
 # 前置:docker compose up -d 且后端已在 :8080 运行
 set -euo pipefail
 
@@ -26,47 +26,61 @@ AUTH="Authorization: Bearer $TOK"
 TAG=$(curl -s -X POST "$BASE/tags" -H "$AUTH" -H 'Content-Type: application/json' -d '{"name":"冒烟资源标签"}')
 TAGID=$(echo "$TAG" | python3 -c "import sys,json;print(json.load(sys.stdin)['tag']['id'])")
 
-echo "==> 2. 建 link 资源(带标签)"
+echo "==> 2. 建 link 资源(带标签/描述)"
 curl -s -X POST "$BASE/resources" -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"type\":\"link\",\"title\":\"冒烟链接\",\"url\":\"https://example.com\",\"tag_ids\":[\"$TAGID\"]}" \
+  -d "{\"type\":\"link\",\"title\":\"冒烟链接\",\"url\":\"https://example.com\",\"description\":\"冒烟描述\",\"tag_ids\":[\"$TAGID\"]}" \
   -o /dev/null -w "create link: %{http_code}\n"
 
-echo "==> 3. 建 paper 资源"
+echo "==> 3. 非法协议应 400"
 curl -s -X POST "$BASE/resources" -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"type":"paper","title":"冒烟文献","doi":"10.1000/smoke"}' -o /dev/null -w "create paper: %{http_code}\n"
+  -d '{"type":"link","title":"x","url":"javascript:alert(1)"}' -o /dev/null -w "bad url: %{http_code}\n"
 
-echo "==> 4. 上传文件"
-curl -s -X POST "$BASE/resources/upload" -H "$AUTH" \
-  -F "file=@README.md;filename=README.md" -o /dev/null -w "upload: %{http_code}\n"
+echo "==> 4. 上传 PDF 文件"
+printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%%%EOF\n' > /tmp/smoke.pdf
+UP=$(curl -s -X POST "$BASE/resources/upload" -H "$AUTH" \
+  -F "file=@/tmp/smoke.pdf;filename=smoke.pdf" \
+  -F "title=冒烟文档" -F "description=上传测试")
+echo "$UP" | python3 -c "
+import sys,json; d=json.load(sys.stdin)['resource']
+print('upload:', d['type'], '|', d['title'], '| mime:', d['mime_type'], '| preview:', d['preview']['supported'])
+assert d['type']=='file' and d['preview']['supported'], '文件上传/预览元信息异常'"
 ls data/uploads/ | head -2
+RID=$(echo "$UP" | python3 -c "import sys,json;print(json.load(sys.stdin)['resource']['id'])")
+rm -f /tmp/smoke.pdf
 
-echo "==> 5. 列表(共享可见,含上传者/标签)"
+echo "==> 5. 下载与预览"
+curl -s -o /dev/null -w "download: %{http_code}\n" "$BASE/resources/$RID/download" -H "$AUTH"
+curl -s -o /dev/null -w "preview: %{http_code}\n" "$BASE/resources/$RID/preview" -H "$AUTH"
+
+echo "==> 6. 列表(共享可见,含上传者/标签/预览)"
 curl -s "$BASE/resources" -H "$AUTH" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print('total:', d['pagination']['total'])
 for r in d['resources']:
     print(' -', r['type'], '|', r['title'], '| uploader:', r['uploader']['display_name'], '| tags:', [t['name'] for t in r['tags']])
-assert d['pagination']['total'] == 3, '应有 3 条资源'
+assert d['pagination']['total'] == 2, '应有 2 条资源(link + file)'
 print('列表 OK')"
 
-echo "==> 6. 筛选:type=link / keyword=文献"
+echo "==> 7. 筛选:type=link / keyword=冒烟"
 curl -s "$BASE/resources?type=link" -H "$AUTH" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
 assert d['pagination']['total']==1 and d['resources'][0]['type']=='link'; print('type 筛选 OK')"
-curl -s "$BASE/resources?keyword=%E6%96%87%E7%8C%AE" -H "$AUTH" | python3 -c "
+curl -s "$BASE/resources?keyword=%E5%86%92%E7%83%9F" -H "$AUTH" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
-assert d['pagination']['total']==1; print('keyword 筛选 OK')"
+assert d['pagination']['total']==2; print('keyword 筛选 OK')"
 
-echo "==> 7. 标签筛选"
+echo "==> 8. 标签筛选"
 curl -s "$BASE/resources?tag_id=$TAGID" -H "$AUTH" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
 assert d['pagination']['total']==1; print('tag 筛选 OK')"
 
-echo "==> 8. 上传非法扩展名应 400"
+echo "==> 9. 上传边界:非法扩展名 / 内容不符 应 400"
 echo "MZ" > /tmp/evil.exe
 curl -s -X POST "$BASE/resources/upload" -H "$AUTH" -F "file=@/tmp/evil.exe;filename=evil.exe" -o /dev/null -w "bad ext: %{http_code}\n"
+printf 'MZ\x90\x00' > /tmp/fake.pdf
+curl -s -X POST "$BASE/resources/upload" -H "$AUTH" -F "file=@/tmp/fake.pdf;filename=fake.pdf" -o /dev/null -w "mime mismatch: %{http_code}\n"
+rm -f /tmp/evil.exe /tmp/fake.pdf
 
-rm -f /tmp/evil.exe
 echo ""
-echo "SMOKE F7/F8 OK ✅"
+echo "SMOKE F7 OK ✅"

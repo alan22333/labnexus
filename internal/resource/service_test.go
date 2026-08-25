@@ -1,11 +1,10 @@
 package resource_test
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -49,7 +48,7 @@ func (r *memUserRepo) GetByIDs(_ context.Context, ids []string) ([]*user.User, e
 	return out, nil
 }
 
-func (r *memUserRepo) Create(_ context.Context, u *user.User) error     { r.byID[u.ID] = u; return nil }
+func (r *memUserRepo) Create(_ context.Context, u *user.User) error { r.byID[u.ID] = u; return nil }
 func (r *memUserRepo) GetByUsername(_ context.Context, _ string) (*user.User, error) {
 	return nil, user.ErrNotFound
 }
@@ -95,8 +94,8 @@ func (r *memTagRepo) ListByResourceIDs(_ context.Context, resourceIDs []string) 
 }
 
 type memResourceRepo struct {
-	byID     map[string]*resource.Resource
-	resTags  map[string][]string
+	byID    map[string]*resource.Resource
+	resTags map[string][]string
 }
 
 func newMemResources() *memResourceRepo {
@@ -162,14 +161,22 @@ type memFileStore struct {
 
 func newMemFileStore() *memFileStore { return &memFileStore{files: map[string]string{}} }
 
-func (m *memFileStore) Save(reader io.Reader, filename string) (string, error) {
+func (m *memFileStore) Save(reader io.Reader, filename string) (string, int64, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	path := "uploads/" + filename
 	m.files[path] = string(data)
-	return path, nil
+	return path, int64(len(data)), nil
+}
+
+func (m *memFileStore) Open(path string) (io.ReadSeekCloser, error) {
+	data, ok := m.files[path]
+	if !ok {
+		return nil, resource.ErrNotFound
+	}
+	return &memReadSeekCloser{Reader: strings.NewReader(data)}, nil
 }
 
 func (m *memFileStore) Delete(path string) error {
@@ -177,14 +184,20 @@ func (m *memFileStore) Delete(path string) error {
 	return nil
 }
 
+type memReadSeekCloser struct {
+	*strings.Reader
+}
+
+func (m *memReadSeekCloser) Close() error { return nil }
+
 // ---- 夹具 ----
 
 type fixture struct {
-	svc    *resource.Service
-	users  *memUserRepo
-	tags   *memTagRepo
-	res    *memResourceRepo
-	files  *memFileStore
+	svc   *resource.Service
+	users *memUserRepo
+	tags  *memTagRepo
+	res   *memResourceRepo
+	files *memFileStore
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -212,7 +225,7 @@ const (
 	adminID = "user-admin"
 )
 
-// ---- F7:创建 ----
+// ---- F7:创建 link ----
 
 func TestCreateLink_Success(t *testing.T) {
 	f := newFixture(t)
@@ -220,11 +233,14 @@ func TestCreateLink_Success(t *testing.T) {
 	tg := f.seedTag("文献")
 
 	view, err := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{
-		Title: "好文章", URL: "https://example.com/a", TagIDs: []string{tg.ID},
+		Title: "好文章", URL: "https://example.com/a", Description: "值得读", TagIDs: []string{tg.ID},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, resource.TypeLink, view.Type)
 	assert.Equal(t, "https://example.com/a", view.URL)
+	assert.Equal(t, "值得读", view.Description)
+	assert.False(t, view.Preview.Supported, "link 不支持预览")
+	assert.Empty(t, view.DownloadURL, "link 无下载地址")
 	require.Len(t, view.Tags, 1)
 	assert.NotNil(t, view.Uploader)
 }
@@ -233,51 +249,27 @@ func TestCreateLink_Validation(t *testing.T) {
 	f := newFixture(t)
 	f.seedUser(userA, user.RoleStudent)
 
-	_, err := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "", URL: "x"})
+	_, err := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "", URL: "https://e.com"})
 	assert.ErrorIs(t, err, resource.ErrTitleEmpty)
 	_, err = f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: ""})
 	assert.ErrorIs(t, err, resource.ErrURLRequired)
-}
 
-func TestCreatePaper_Success(t *testing.T) {
-	f := newFixture(t)
-	f.seedUser(userA, user.RoleStudent)
+	// 非法协议/格式
+	for _, bad := range []string{
+		"javascript:alert(1)", "ftp://example.com/x", "file:///etc/passwd",
+		"not-a-url", "//example.com", "https://", "http://", "data:text/html,x",
+	} {
+		_, err = f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: bad})
+		assert.ErrorIs(t, err, resource.ErrInvalidURL, "URL=%q", bad)
+	}
 
-	view, err := f.svc.CreatePaper(context.Background(), userA, resource.CreatePaperRequest{
-		Title: "Paper X", DOI: "10.1000/xyz",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, resource.TypePaper, view.Type)
-	assert.Equal(t, "10.1000/xyz", view.DOI)
-}
-
-func TestCreatePaper_NeedDOIOrArxiv(t *testing.T) {
-	f := newFixture(t)
-	f.seedUser(userA, user.RoleStudent)
-
-	_, err := f.svc.CreatePaper(context.Background(), userA, resource.CreatePaperRequest{Title: "x"})
-	assert.ErrorIs(t, err, resource.ErrDOIOrArxivRequired)
-}
-
-func TestUploadFile_Success(t *testing.T) {
-	f := newFixture(t)
-	f.seedUser(userA, user.RoleStudent)
-
-	view, err := f.svc.UploadFile(context.Background(), userA, "paper.pdf",
-		strings.NewReader("%PDF-1.4 test"), "", nil)
-	require.NoError(t, err)
-	assert.Equal(t, resource.TypeFile, view.Type)
-	assert.NotEmpty(t, view.FilePath)
-	assert.Contains(t, f.files.files, view.FilePath)
-}
-
-func TestUploadFile_BadExt(t *testing.T) {
-	f := newFixture(t)
-	f.seedUser(userA, user.RoleStudent)
-
-	_, err := f.svc.UploadFile(context.Background(), userA, "evil.exe",
-		strings.NewReader("MZ"), "", nil)
-	assert.ErrorIs(t, err, resource.ErrFileTypeNotAllowed)
+	// 合法 http/https
+	for _, good := range []string{
+		"http://example.com", "https://example.com/a?b=c#d", "https://sub.example.com:8443/x",
+	} {
+		_, err = f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: good})
+		assert.NoError(t, err, "URL=%q", good)
+	}
 }
 
 func TestCreate_TagNotFound(t *testing.T) {
@@ -290,13 +282,145 @@ func TestCreate_TagNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, tag.ErrTagNotFound)
 }
 
+// ---- F7:上传 file ----
+
+func TestUploadFile_Success_PDF(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	view, err := f.svc.UploadFile(context.Background(), userA, "论文.pdf",
+		strings.NewReader("%PDF-1.4 test content"), "论文", "第一篇文献", nil)
+	require.NoError(t, err)
+	assert.Equal(t, resource.TypeFile, view.Type)
+	assert.Equal(t, "论文", view.Title)
+	assert.Equal(t, "第一篇文献", view.Description)
+	assert.Equal(t, "论文.pdf", view.OriginalName)
+	assert.Equal(t, "application/pdf", view.MimeType)
+	assert.Greater(t, view.FileSize, int64(0))
+	assert.NotEmpty(t, view.FilePath)
+	assert.Contains(t, f.files.files, view.FilePath)
+	assert.True(t, view.Preview.Supported)
+	assert.Equal(t, "pdf", view.Preview.Type)
+	assert.Contains(t, view.Preview.URL, "/preview")
+	assert.Contains(t, view.DownloadURL, "/download")
+}
+
+func TestUploadFile_Success_Image(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	// 1x1 PNG
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52}
+
+	view, err := f.svc.UploadFile(context.Background(), userA, "fig.png",
+		bytes.NewReader(png), "", "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "image/png", view.MimeType)
+	assert.True(t, view.Preview.Supported)
+	assert.Equal(t, "image", view.Preview.Type)
+}
+
+func TestUploadFile_Success_Text(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	view, err := f.svc.UploadFile(context.Background(), userA, "notes.md",
+		strings.NewReader("# 组会记录\n- 事项"), "", "", nil)
+	require.NoError(t, err)
+	assert.True(t, view.Preview.Supported)
+	assert.Equal(t, "text", view.Preview.Type)
+}
+
+func TestUploadFile_Success_Video(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	// MP4:offset 4 为 "ftyp"
+	mp4 := append([]byte{0x00, 0x00, 0x00, 0x18}, []byte("ftypisom")...)
+
+	view, err := f.svc.UploadFile(context.Background(), userA, "demo.mp4",
+		bytes.NewReader(mp4), "", "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "video/mp4", view.MimeType)
+	assert.True(t, view.Preview.Supported)
+	assert.Equal(t, "video", view.Preview.Type)
+}
+
+func TestUploadFile_BadExt(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	_, err := f.svc.UploadFile(context.Background(), userA, "evil.exe",
+		strings.NewReader("MZ"), "", "", nil)
+	assert.ErrorIs(t, err, resource.ErrFileTypeNotAllowed)
+}
+
+func TestUploadFile_MimeMismatch(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	// 改名的可执行文件:扩展名 pdf,内容不是 PDF
+	_, err := f.svc.UploadFile(context.Background(), userA, "fake.pdf",
+		strings.NewReader("MZ\x90\x00exe payload"), "", "", nil)
+	assert.ErrorIs(t, err, resource.ErrFileContentMismatch)
+}
+
+func TestUploadFile_TooLarge(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	// 普通文件 > 50MB
+	big := &repeatReader{prefix: "%PDF-1.4\n", n: resource.MaxFileSize + 1}
+	_, err := f.svc.UploadFile(context.Background(), userA, "big.pdf", big, "", "", nil)
+	assert.ErrorIs(t, err, resource.ErrFileTooLarge)
+	// 超限时不留孤儿文件
+	assert.Empty(t, f.files.files)
+}
+
+func TestUploadFile_VideoTooLarge(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	// 视频 > 100MB
+	big := &repeatReader{prefix: "\x00\x00\x00\x18ftypisom", n: resource.MaxVideoSize + 1}
+	_, err := f.svc.UploadFile(context.Background(), userA, "big.mp4", big, "", "", nil)
+	assert.ErrorIs(t, err, resource.ErrFileTooLarge)
+	assert.Empty(t, f.files.files)
+}
+
+// repeatReader 先输出 prefix,再输出 'a' 直至共 n 字节(避免大内存分配)。
+type repeatReader struct {
+	prefix string
+	n      int64
+	wrote  int64
+}
+
+func (r *repeatReader) Read(p []byte) (int, error) {
+	if r.wrote >= r.n {
+		return 0, io.EOF
+	}
+	remaining := r.n - r.wrote
+	// 先给 prefix
+	pre := []byte(r.prefix)
+	if r.wrote < int64(len(pre)) {
+		c := copy(p, pre[r.wrote:])
+		if int64(c) > remaining {
+			c = int(remaining)
+		}
+		r.wrote += int64(c)
+		return c, nil
+	}
+	c := copy(p, bytes.Repeat([]byte("a"), len(p)))
+	if int64(c) > remaining {
+		c = int(remaining)
+	}
+	r.wrote += int64(c)
+	return c, nil
+}
+
 // ---- F7:列表/详情 ----
 
 func TestList_FilterByTypeAndKeyword(t *testing.T) {
 	f := newFixture(t)
 	f.seedUser(userA, user.RoleStudent)
 	_, _ = f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "深度学习入门", URL: "https://a.com"})
-	_, _ = f.svc.CreatePaper(context.Background(), userA, resource.CreatePaperRequest{Title: "Attention Is All", DOI: "10.1/x"})
+	_, _ = f.svc.UploadFile(context.Background(), userA, "attention.pdf", strings.NewReader("%PDF-1.4 a"), "Attention Is All", "", nil)
 
 	list, total, err := f.svc.List(context.Background(), resource.ListFilter{Type: resource.TypeLink})
 	require.NoError(t, err)
@@ -319,6 +443,32 @@ func TestGet_AnyUser(t *testing.T) {
 	assert.Equal(t, view.ID, got.ID)
 }
 
+// ---- F7:打开文件(下载/预览) ----
+
+func TestOpenFile_OnlyFileType(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+
+	link, _ := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: "https://a.com"})
+	_, _, err := f.svc.OpenFile(context.Background(), link.ID)
+	assert.ErrorIs(t, err, resource.ErrNotFile)
+
+	file, _ := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("%PDF-1.4 x"), "", "", nil)
+	_, rc, err := f.svc.OpenFile(context.Background(), file.ID)
+	require.NoError(t, err)
+	defer rc.Close()
+	head := make([]byte, 8)
+	_, _ = io.ReadFull(rc, head)
+	assert.Equal(t, "%PDF-1.4", string(head))
+}
+
+func TestOpenFile_NotFound(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	_, _, err := f.svc.OpenFile(context.Background(), "no-such")
+	assert.ErrorIs(t, err, resource.ErrResourceNotFound)
+}
+
 // ---- F7:修改/删除权限 ----
 
 func TestUpdate_OnlyUploaderOrAdmin(t *testing.T) {
@@ -338,11 +488,13 @@ func TestUpdate_OnlyUploaderOrAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "admin改", updated.Title)
 
-	// 上传者 → OK
+	// 上传者 → OK(含 description)
 	title2 := "作者改"
-	updated2, err := f.svc.Update(context.Background(), userA, view.ID, resource.UpdateRequest{Title: &title2})
+	desc := "新描述"
+	updated2, err := f.svc.Update(context.Background(), userA, view.ID, resource.UpdateRequest{Title: &title2, Description: &desc})
 	require.NoError(t, err)
 	assert.Equal(t, "作者改", updated2.Title)
+	assert.Equal(t, "新描述", updated2.Description)
 }
 
 func TestDelete_OnlyUploaderOrAdmin(t *testing.T) {
@@ -350,7 +502,7 @@ func TestDelete_OnlyUploaderOrAdmin(t *testing.T) {
 	f.seedUser(userA, user.RoleStudent)
 	f.seedUser("user-b", user.RoleStudent)
 	f.seedUser(adminID, user.RoleAdmin)
-	view, _ := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("x"), "", nil)
+	view, _ := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("%PDF-1.4 x"), "", "", nil)
 
 	// 他人 → 403
 	assert.ErrorIs(t, f.svc.Delete(context.Background(), "user-b", view.ID), resource.ErrResourceForbidden)
@@ -360,103 +512,17 @@ func TestDelete_OnlyUploaderOrAdmin(t *testing.T) {
 	assert.NotContains(t, f.files.files, view.FilePath)
 
 	// admin 删另一个
-	view2, _ := f.svc.UploadFile(context.Background(), userA, "b.pdf", strings.NewReader("y"), "", nil)
+	view2, _ := f.svc.UploadFile(context.Background(), userA, "b.pdf", strings.NewReader("%PDF-1.4 y"), "", "", nil)
 	require.NoError(t, f.svc.Delete(context.Background(), adminID, view2.ID))
 }
 
-// ---- F8:元数据抓取(mock 外部服务) ----
-
-func crossrefHandler(t *testing.T) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/works/10.1000%2Fxyz", "/works/10.1000/xyz":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"message":{
-				"title":["Crossref Paper"],
-				"author":[{"given":"Alice","family":"Smith"},{"given":"Bob","family":"Lee"}],
-				"container-title":["Journal of Testing"],
-				"published-print":{"date-parts":[[2024]]},
-				"DOI":"10.1000/xyz"
-			}}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
-func TestFetchPaperMeta_Crossref(t *testing.T) {
+func TestDelete_LinkNoFile(t *testing.T) {
 	f := newFixture(t)
-	srv := httptest.NewServer(crossrefHandler(t))
-	defer srv.Close()
-	f.svc.WithEndpoints(srv.Client(), srv.URL, srv.URL)
-
-	meta, err := f.svc.FetchPaperMeta(context.Background(), "10.1000/xyz", "")
-	require.NoError(t, err)
-	assert.Equal(t, "Crossref Paper", meta.Title)
-	require.Len(t, meta.Authors, 2)
-	assert.Equal(t, "Alice Smith", meta.Authors[0])
-	assert.Equal(t, "Journal of Testing", meta.Journal)
-	assert.Equal(t, 2024, meta.Year)
-	assert.Equal(t, "10.1000/xyz", meta.DOI)
-}
-
-func TestFetchPaperMeta_Arxiv(t *testing.T) {
-	f := newFixture(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Contains(t, r.URL.Path, "/query")
-		w.Header().Set("Content-Type", "application/atom+xml")
-		_, _ = w.Write([]byte(`<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <title>Arxiv Paper Title</title>
-    <author><name>Carol White</name></author>
-    <published>2023-06-01T00:00:00Z</published>
-    <id>http://arxiv.org/abs/2306.00123</id>
-  </entry>
-</feed>`))
-	}))
-	defer srv.Close()
-	f.svc.WithEndpoints(srv.Client(), srv.URL, srv.URL)
-
-	meta, err := f.svc.FetchPaperMeta(context.Background(), "", "2306.00123")
-	require.NoError(t, err)
-	assert.Equal(t, "Arxiv Paper Title", meta.Title)
-	require.Len(t, meta.Authors, 1)
-	assert.Equal(t, "Carol White", meta.Authors[0])
-	assert.Equal(t, 2023, meta.Year)
-	assert.Equal(t, "2306.00123", meta.ArxivID)
-}
-
-func TestFetchPaperMeta_NotFound(t *testing.T) {
-	f := newFixture(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-	f.svc.WithEndpoints(srv.Client(), srv.URL, srv.URL)
-
-	_, err := f.svc.FetchPaperMeta(context.Background(), "10.9999/missing", "")
-	assert.ErrorIs(t, err, resource.ErrPaperMetaNotFound)
-}
-
-func TestFetchPaperMeta_UpstreamError(t *testing.T) {
-	f := newFixture(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	f.svc.WithEndpoints(srv.Client(), srv.URL, srv.URL)
-
-	_, err := f.svc.FetchPaperMeta(context.Background(), "10.1000/xyz", "")
-	assert.ErrorIs(t, err, resource.ErrPaperMetaUpstream)
-}
-
-func TestFetchPaperMeta_RequireParam(t *testing.T) {
-	f := newFixture(t)
-	_, err := f.svc.FetchPaperMeta(context.Background(), "", "")
-	assert.ErrorIs(t, err, resource.ErrDOIOrArxivRequired)
+	f.seedUser(userA, user.RoleStudent)
+	view, _ := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: "https://a.com"})
+	require.NoError(t, f.svc.Delete(context.Background(), userA, view.ID))
 }
 
 func strPtr(s string) *string { return &s }
 
-var _ = errors.Is
+var _ = http.MethodGet
