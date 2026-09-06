@@ -40,14 +40,14 @@
 - ✅ **前端验证壳完成**:纯 HTML/JS shell、诊断、端到端和 smoke 流程已完成;
 - ▶️ **当前重点**:正式前端(labnexus-frontend)补齐 `/admin` 页与 F9 v2 新字段的对接(由前端协作者 liyan310 负责);
   产品侧继续从学生/导师视角梳理灵感库新需求(讨论中);后端稳定化路线见 `docs/backend-roadmap.md`;
-- ⏸️ **灵感库 F11~F21 暂缓**:除非触发条件满足且经人工确认，否则不进入开发。
+- ⏸️ **灵感库暂缓**:除非触发条件满足且经人工确认，否则不进入开发(清单见 product-context §2 / 外部 PRD §4.4)。
 
 ## 铁律(违反即"跑偏",禁止)
 
 1. **SDD + TDD**:没有规格不写代码;没有测试不提交(standards §0);
 2. **契约先行**:任何接口变更先改 `docs/api-contract.md`;
 3. **不推翻已定决策**:Go/Gin/GORM/模块化单体/MVC/统一内容模型等(清单见 `docs/product-context.md` §4);
-4. **不做灵感库功能**:F11~F21 暂不实现(清单见 product-context §2 灵感库),除非触发条件满足且经人工确认;
+4. **不做灵感库功能**:暂不实现(清单见 product-context §2 灵感库 / 外部 PRD §4.4),除非触发条件满足且经人工确认;
 5. **AI 产物红线**:不改 `schema.sql`/`api-contract.md`/`standards.md` 而不经明确 review;不引入新依赖不说明理由;不跳过测试;不绕过分层(standards §7.3);
 6. **权限判断只走 `can(user, action, target)`**,禁止散落硬编码(PRD §3.3)。
 
