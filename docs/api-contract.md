@@ -209,15 +209,44 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 `participant`:`{id, name, student_no, total_items, total_should_return, total_returned}`
 `bill`:`{batch_name, date, payroll_amount, should_return, returned, note}`
 
-## 管理端(阶段 1 起)
+## 管理端(Admin Console,仅 admin)
+
+> 依据:specs/admin-console.md。权限:👑 = admin;supervisor/student → 403。
+> 管理 API 全部挂 `/api/admin/*`;前端管理页 `/admin`(React)仅 admin 可见。
+
+### 成员管理
 
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
-| GET | `/admin/users` | 👑 | — | `{users: []}` |
+| GET | `/admin/users` | 👑 | query:`q?` | `{users: []}`(不含密码;q 过滤 username/display_name) |
 | PATCH | `/admin/users/:id/role` | 👑 | `{role}` | `{user}` |
-| POST | `/admin/invites` | 👑 | `{expires_at?}` | `201 {code, url}` |
+
+- `role` ∈ `admin|supervisor|student`;改角色即时生效(已签发 access token 的 role claim 至多 15 分钟后按新角色)。
+- **防锁死**:不能把自己改成非 admin;不能把最后一个 admin 降级 → 400 `VALIDATION`。
+
+### 邀请码管理
+
+| 方法 | 路径 | 权限 | 请求体 | 响应 |
+|---|---|---|---|---|
 | GET | `/admin/invites` | 👑 | — | `{invites: []}` |
+| POST | `/admin/invites` | 👑 | `{code?}`(空=自动生成) | `201 {invite, url}` |
 | DELETE | `/admin/invites/:id` | 👑 | — | `204` |
+
+- `invite` 结构:`{id, code, created_by, created_at, used_by?, used_at?}`;`url` = 注册页链接。
+- 自定义 code 与已有冲突 → 409 `CONFLICT`;本次不提供有效期(默认永久有效)。
+
+### 任务类型管理
+
+| 方法 | 路径 | 权限 | 请求体 | 响应 |
+|---|---|---|---|---|
+| GET | `/admin/task-types` | 👑 | — | `{task_types: []}`(含停用) |
+| POST | `/admin/task-types` | 👑 | `{name, color?}` | `201 {task_type}` |
+| PATCH | `/admin/task-types/:id` | 👑 | `{name?, color?, sort?, active?}` | `{task_type}` |
+| DELETE | `/admin/task-types/:id` | 👑 | — | `204` |
+
+- 同名创建/改名 → 409 `CONFLICT`。
+- 删除(内置与自建均可):事务内删类型 + 引用该类型的任务 `type_id` 置空(回退未分类)。
+- 公开只读 `GET /task-types`(F9)仍只返回 active;任务视图展示用全量字典,停用类型旧任务仍显示原名。
 
 ## 待定/备注
 

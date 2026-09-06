@@ -198,6 +198,14 @@ type Repository interface {
 	ListCandidateUsers(ctx context.Context, projectID string) ([]*user.User, error)
 	// TaskStats 按项目批量统计任务(含过期数);返回 map[projectID]*TaskStats。
 	TaskStats(ctx context.Context, projectIDs []string) (map[string]*TaskStats, error)
+
+	// 任务类型字典管理(admin console;specs/admin-console.md §3.3)
+	ListAllTaskTypes(ctx context.Context) ([]*TaskType, error)
+	CreateTaskType(ctx context.Context, t *TaskType) error
+	UpdateTaskType(ctx context.Context, t *TaskType) error
+	DeleteTaskType(ctx context.Context, id string) error
+	// ClearTasksType 删除类型时,把引用该类型的任务 type_id 置空(事务内与 DeleteTaskType 同事务)。
+	ClearTasksType(ctx context.Context, typeID string) error
 }
 
 // TaskStats 项目任务进度统计。
@@ -396,6 +404,40 @@ func (r *GormRepository) GetTaskType(ctx context.Context, id string) (*TaskType,
 		return nil, err
 	}
 	return &t, nil
+}
+
+// ---- admin console:任务类型字典管理(specs/admin-console.md §3.3) ----
+
+func (r *GormRepository) ListAllTaskTypes(ctx context.Context) ([]*TaskType, error) {
+	var list []*TaskType
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Order("sort ASC, name ASC").Find(&list).Error
+	return list, err
+}
+
+func (r *GormRepository) CreateTaskType(ctx context.Context, t *TaskType) error {
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).Create(t).Error
+}
+
+func (r *GormRepository) UpdateTaskType(ctx context.Context, t *TaskType) error {
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).Save(t).Error
+}
+
+func (r *GormRepository) DeleteTaskType(ctx context.Context, id string) error {
+	res := database.TxFromContext(ctx, r.db).WithContext(ctx).Delete(&TaskType{}, "id = ?", id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *GormRepository) ClearTasksType(ctx context.Context, typeID string) error {
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Model(&Task{}).Where("type_id = ?", typeID).
+		Updates(map[string]any{"type_id": nil}).Error
 }
 
 func (r *GormRepository) ListCandidateUsers(ctx context.Context, projectID string) ([]*user.User, error) {

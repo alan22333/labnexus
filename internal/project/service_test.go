@@ -2,6 +2,7 @@ package project_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -49,6 +50,19 @@ func (r *memUserRepo) GetByUsername(_ context.Context, _ string) (*user.User, er
 	return nil, user.ErrNotFound
 }
 func (r *memUserRepo) Update(_ context.Context, u *user.User) error { r.byID[u.ID] = u; return nil }
+
+func (r *memUserRepo) ListAll(_ context.Context, keyword string) ([]*user.User, error) {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	var out []*user.User
+	for _, u := range r.byID {
+		if kw == "" ||
+			strings.Contains(strings.ToLower(u.Username), kw) ||
+			strings.Contains(strings.ToLower(u.DisplayName), kw) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
 
 type memProjectRepo struct {
 	projects   map[string]*project.Project
@@ -245,6 +259,54 @@ func (r *memProjectRepo) GetTaskType(_ context.Context, id string) (*project.Tas
 		return nil, project.ErrNotFound
 	}
 	return ty, nil
+}
+
+func (r *memProjectRepo) ListAllTaskTypes(_ context.Context) ([]*project.TaskType, error) {
+	var out []*project.TaskType
+	for _, ty := range r.types {
+		out = append(out, ty)
+	}
+	return out, nil
+}
+
+func (r *memProjectRepo) CreateTaskType(_ context.Context, t *project.TaskType) error {
+	for _, existing := range r.types {
+		if existing.Name == t.Name {
+			return errors.New("unique violation: task_types.name")
+		}
+	}
+	r.types[t.ID] = t
+	return nil
+}
+
+func (r *memProjectRepo) UpdateTaskType(_ context.Context, t *project.TaskType) error {
+	if _, ok := r.types[t.ID]; !ok {
+		return project.ErrNotFound
+	}
+	for id, existing := range r.types {
+		if existing.Name == t.Name && id != t.ID {
+			return errors.New("unique violation: task_types.name")
+		}
+	}
+	r.types[t.ID] = t
+	return nil
+}
+
+func (r *memProjectRepo) DeleteTaskType(_ context.Context, id string) error {
+	if _, ok := r.types[id]; !ok {
+		return project.ErrNotFound
+	}
+	delete(r.types, id)
+	return nil
+}
+
+func (r *memProjectRepo) ClearTasksType(_ context.Context, typeID string) error {
+	for _, t := range r.tasks {
+		if t.TypeID != nil && *t.TypeID == typeID {
+			t.TypeID = nil
+		}
+	}
+	return nil
 }
 
 func (r *memProjectRepo) ListCandidateUsers(_ context.Context, projectID string) ([]*user.User, error) {

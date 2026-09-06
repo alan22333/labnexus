@@ -23,14 +23,15 @@ import (
 	"labnexus/internal/app"
 	"labnexus/internal/config"
 	"labnexus/internal/database"
+	"labnexus/internal/project"
 )
 
-// truncateTables 清理的业务表(阶段 1+2+3;顺序无关,无外键约束,加 CASCADE 保险)
+// truncateTables 清理的业务表(阶段 1+2+3+管理后台;顺序无关,无外键约束,加 CASCADE 保险)
 var truncateTables = []string{
 	"document_tags", "reactions", "comments", "documents",
 	"folders", "spaces", "invite_codes", "tags", "users",
 	"resource_tags", "resources",
-	"task_links", "tasks", "milestones", "project_members", "projects",
+	"task_links", "tasks", "milestones", "project_members", "projects", "task_types",
 	"turnover_submissions", "turnover_items", "participants",
 	"turnover_batches", "transactions", "accounts",
 }
@@ -58,12 +59,13 @@ func setupServer(t *testing.T) *gin.Engine {
 	return r
 }
 
-// resetData 清空业务表与 Redis(每个测试独立数据起点)。
+// resetData 清空业务表与 Redis(每个测试独立数据起点),并重建任务类型内置种子。
 func resetData(t *testing.T, db *gorm.DB, cfg *config.Config) {
 	t.Helper()
 	for _, tbl := range truncateTables {
 		require.NoError(t, db.Exec("TRUNCATE TABLE "+tbl+" CASCADE").Error, "清表 %s", tbl)
 	}
+	require.NoError(t, project.SeedDefaultTaskTypes(context.Background(), db), "重建内置任务类型")
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
 	require.NoError(t, rdb.FlushDB(context.Background()).Err(), "Redis FLUSHDB")

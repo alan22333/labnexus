@@ -54,6 +54,19 @@ func (r *memUserRepo) GetByUsername(_ context.Context, _ string) (*user.User, er
 }
 func (r *memUserRepo) Update(_ context.Context, u *user.User) error { r.byID[u.ID] = u; return nil }
 
+func (r *memUserRepo) ListAll(_ context.Context, keyword string) ([]*user.User, error) {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	var out []*user.User
+	for _, u := range r.byID {
+		if kw == "" ||
+			strings.Contains(strings.ToLower(u.Username), kw) ||
+			strings.Contains(strings.ToLower(u.DisplayName), kw) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 type memRepo struct {
 	batches      map[string]*finance.TurnoverBatch
 	participants map[string]*finance.Participant

@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,19 @@ func (r *memUserRepo) Update(_ context.Context, u *user.User) error {
 	return nil
 }
 
+func (r *memUserRepo) ListAll(_ context.Context, keyword string) ([]*user.User, error) {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	var out []*user.User
+	for _, u := range r.byID {
+		if kw == "" ||
+			strings.Contains(strings.ToLower(u.Username), kw) ||
+			strings.Contains(strings.ToLower(u.DisplayName), kw) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 type memInviteRepo struct {
 	byCode map[string]*user.InviteCode
 }
@@ -104,6 +118,24 @@ func (r *memInviteRepo) MarkUsed(_ context.Context, id, userID string) error {
 		}
 	}
 	return errors.New("not found")
+}
+
+func (r *memInviteRepo) List(_ context.Context) ([]*user.InviteCode, error) {
+	var out []*user.InviteCode
+	for _, c := range r.byCode {
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (r *memInviteRepo) Delete(_ context.Context, id string) error {
+	for code, c := range r.byCode {
+		if c.ID == id {
+			delete(r.byCode, code)
+			return nil
+		}
+	}
+	return user.ErrNotFound
 }
 
 type memSpaceRepo struct {

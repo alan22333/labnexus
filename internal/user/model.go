@@ -4,6 +4,7 @@ package user
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,6 +88,8 @@ type Repository interface {
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	GetByIDs(ctx context.Context, ids []string) ([]*User, error)
 	Update(ctx context.Context, u *User) error
+	// ListAll 全量用户(可空关键字按 username/display_name 子串过滤;按 display_name 排序;管理端用)
+	ListAll(ctx context.Context, keyword string) ([]*User, error)
 }
 
 // GormRepository User 的 GORM 实现
@@ -140,11 +143,35 @@ func (r *GormRepository) Update(ctx context.Context, u *User) error {
 	return database.TxFromContext(ctx, r.db).WithContext(ctx).Save(u).Error
 }
 
+// ListAll 全量用户;keyword 非空时按 username/display_name ILIKE 过滤;按 display_name 排序。
+func (r *GormRepository) ListAll(ctx context.Context, keyword string) ([]*User, error) {
+	q := database.TxFromContext(ctx, r.db).WithContext(ctx)
+	if strings.TrimSpace(keyword) != "" {
+		kw := "%" + escapeLike(strings.TrimSpace(keyword)) + "%"
+		q = q.Where("username ILIKE ? ESCAPE '\\' OR display_name ILIKE ? ESCAPE '\\'", kw, kw)
+	}
+	var list []*User
+	err := q.Order("display_name ASC").Find(&list).Error
+	return list, err
+}
+
+// escapeLike 转义 LIKE 通配符(与 project/resource 一致)。
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // InviteRepository 邀请码数据访问接口
 type InviteRepository interface {
 	Create(ctx context.Context, c *InviteCode) error
 	GetByCode(ctx context.Context, code string) (*InviteCode, error)
 	MarkUsed(ctx context.Context, id, userID string) error
+	// List 全部邀请码(按创建时间倒序;管理端用)
+	List(ctx context.Context) ([]*InviteCode, error)
+	// Delete 删除(撤销)邀请码;不存在返回 ErrNotFound
+	Delete(ctx context.Context, id string) error
 }
 
 // GormInviteRepository InviteCode 的 GORM 实现
@@ -177,4 +204,22 @@ func (r *GormInviteRepository) MarkUsed(ctx context.Context, id, userID string) 
 	return database.TxFromContext(ctx, r.db).WithContext(ctx).Model(&InviteCode{}).
 		Where("id = ?", id).
 		Updates(map[string]any{"used_by": userID, "used_at": now}).Error
+}
+
+func (r *GormInviteRepository) List(ctx context.Context) ([]*InviteCode, error) {
+	var list []*InviteCode
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Order("created_at DESC").Find(&list).Error
+	return list, err
+}
+
+func (r *GormInviteRepository) Delete(ctx context.Context, id string) error {
+	res := database.TxFromContext(ctx, r.db).WithContext(ctx).Delete(&InviteCode{}, "id = ?", id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

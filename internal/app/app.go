@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"labnexus/internal/admin"
 	"labnexus/internal/auth"
 	"labnexus/internal/cache"
 	"labnexus/internal/config"
@@ -100,6 +101,10 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		WithTxRunner(database.GormTxRunner(db))
 	projectHandler := project.NewHandler(projectSvc)
 
+	// 管理后台(Admin Console):仅 admin;聚合 users/invites + project 任务类型管理
+	adminSvc := admin.NewService(users, invites, projectSvc)
+	adminHandler := admin.NewHandler(adminSvc)
+
 	// 阶段 3:F10 经费管理(仅 admin/supervisor)
 	financeSvc := finance.NewService(finance.NewGormRepository(db), users).
 		WithTxRunner(database.GormTxRunner(db)).
@@ -131,6 +136,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	tagHandler.RegisterRoutes(r, cfg.JWTSecret)
 	resHandler.RegisterRoutes(r, cfg.JWTSecret)
 	projectHandler.RegisterRoutes(r, cfg.JWTSecret)
+	adminHandler.RegisterRoutes(r, cfg.JWTSecret)
 	financeHandler.RegisterRoutes(r, cfg.JWTSecret)
 
 	// 前端外壳(阶段 1 验证:纯 HTML/JS,由后端托管)

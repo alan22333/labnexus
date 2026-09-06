@@ -33,6 +33,9 @@ var (
 	ErrCannotRemoveOwner  = errors.New("cannot remove project owner")
 	ErrInvalidLinkType    = errors.New("invalid link target type")
 	ErrInvalidTaskType    = errors.New("invalid task type")
+	ErrTaskTypeNameEmpty  = errors.New("task type name is empty")
+	ErrTaskTypeExists     = errors.New("task type already exists")
+	ErrTaskTypeNotFound   = errors.New("task type not found")
 )
 
 // 成员角色
@@ -557,9 +560,108 @@ func (s *Service) resolveTaskType(ctx context.Context, typeID *string) (*string,
 	return typeID, nil
 }
 
-// ListTaskTypes 任务类型字典(仅 active)。
+// ListTaskTypes 任务类型字典(仅 active;公开下拉用)。
 func (s *Service) ListTaskTypes(ctx context.Context) ([]*TaskType, error) {
 	return s.repo.ListTaskTypes(ctx)
+}
+
+// ListAllTaskTypes 全部类型含停用(admin console 列表)。
+func (s *Service) ListAllTaskTypes(ctx context.Context) ([]*TaskType, error) {
+	return s.repo.ListAllTaskTypes(ctx)
+}
+
+// CreateTaskType 新建任务类型(admin console)。name 必填;重名 → ErrTaskTypeExists。
+func (s *Service) CreateTaskType(ctx context.Context, name, color string) (*TaskType, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrTaskTypeNameEmpty
+	}
+	list, err := s.repo.ListAllTaskTypes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range list {
+		if t.Name == name {
+			return nil, ErrTaskTypeExists
+		}
+	}
+	ty := NewTaskType(name, color, len(list), false)
+	if err := s.repo.CreateTaskType(ctx, ty); err != nil {
+		return nil, err
+	}
+	return ty, nil
+}
+
+// UpdateTaskTypeRequest 任务类型编辑请求。
+type UpdateTaskTypeRequest struct {
+	Name   *string `json:"name"`
+	Color  *string `json:"color"`
+	Sort   *int    `json:"sort"`
+	Active *bool   `json:"active"`
+}
+
+// UpdateTaskType 编辑任务类型(改名/换色/排序/停用启用;admin console)。
+func (s *Service) UpdateTaskType(ctx context.Context, id string, req UpdateTaskTypeRequest) (*TaskType, error) {
+	t, err := s.findTaskType(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			return nil, ErrTaskTypeNameEmpty
+		}
+		list, err := s.repo.ListAllTaskTypes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, other := range list {
+			if other.Name == name && other.ID != id {
+				return nil, ErrTaskTypeExists
+			}
+		}
+		t.Name = name
+	}
+	if req.Color != nil {
+		t.Color = *req.Color
+	}
+	if req.Sort != nil {
+		t.Sort = *req.Sort
+	}
+	if req.Active != nil {
+		t.Active = *req.Active
+	}
+	if err := s.repo.UpdateTaskType(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// DeleteTaskType 删除任务类型(内置/自建同权;引用任务回退未分类;事务)。
+func (s *Service) DeleteTaskType(ctx context.Context, id string) error {
+	if _, err := s.findTaskType(ctx, id); err != nil {
+		return err
+	}
+	return s.txRunner(ctx, func(tctx context.Context) error {
+		if err := s.repo.ClearTasksType(tctx, id); err != nil {
+			return err
+		}
+		return s.repo.DeleteTaskType(tctx, id)
+	})
+}
+
+// findTaskType 按 id 查任意状态类型(含停用;admin 管理用,不做 active 过滤)。
+func (s *Service) findTaskType(ctx context.Context, id string) (*TaskType, error) {
+	list, err := s.repo.ListAllTaskTypes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range list {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, ErrTaskTypeNotFound
 }
 
 // ListCandidateUsers 加成员候选(仅 owner;未入组用户,按 display_name 排序)。
@@ -708,10 +810,10 @@ func (s *Service) buildTaskViews(ctx context.Context, tasks []*Task) ([]*TaskVie
 	for _, u := range users {
 		userByID[u.ID] = u
 	}
-	// 类型:仅需展示用,缺失(如类型停用)不阻塞 —— 查一次并容忍单个失败
+	// 类型:用全量字典(含停用),停用类型的旧任务仍显示原类型名(specs/admin-console.md §3.3)
 	typeByID := map[string]*TaskType{}
 	if len(typeIDs) > 0 {
-		types, err := s.repo.ListTaskTypes(ctx)
+		types, err := s.repo.ListAllTaskTypes(ctx)
 		if err == nil {
 			for _, ty := range types {
 				typeByID[ty.ID] = ty
