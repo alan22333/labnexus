@@ -56,6 +56,8 @@ type memProjectRepo struct {
 	milestones map[string]*project.Milestone
 	tasks      map[string]*project.Task
 	links      map[string][]*project.TaskLink // taskID -> links
+	types      map[string]*project.TaskType   // task type dictionary
+	allUsers   map[string]*user.User          // 全站用户(候选集:allUsers − members)
 }
 
 func newMemRepo() *memProjectRepo {
@@ -65,7 +67,16 @@ func newMemRepo() *memProjectRepo {
 		milestones: map[string]*project.Milestone{},
 		tasks:      map[string]*project.Task{},
 		links:      map[string][]*project.TaskLink{},
+		types:      map[string]*project.TaskType{},
+		allUsers:   map[string]*user.User{},
 	}
+}
+
+// seedType 注册任务类型并返回 id(测试替身数据源)。
+func (r *memProjectRepo) seedType(name string) string {
+	id := "type-" + name
+	r.types[id] = &project.TaskType{ID: id, Name: name, Color: "#000000", Sort: 0, Builtin: true, Active: true}
+	return id
 }
 
 func memberKey(projectID, userID string) string { return projectID + "|" + userID }
@@ -218,6 +229,60 @@ func (r *memProjectRepo) ListLinks(_ context.Context, taskID string) ([]*project
 	return r.links[taskID], nil
 }
 
+func (r *memProjectRepo) ListTaskTypes(_ context.Context) ([]*project.TaskType, error) {
+	var out []*project.TaskType
+	for _, ty := range r.types {
+		if ty.Active {
+			out = append(out, ty)
+		}
+	}
+	return out, nil
+}
+
+func (r *memProjectRepo) GetTaskType(_ context.Context, id string) (*project.TaskType, error) {
+	ty, ok := r.types[id]
+	if !ok || !ty.Active {
+		return nil, project.ErrNotFound
+	}
+	return ty, nil
+}
+
+func (r *memProjectRepo) ListCandidateUsers(_ context.Context, projectID string) ([]*user.User, error) {
+	var out []*user.User
+	for _, u := range r.allUsers {
+		if _, isMember := r.members[memberKey(projectID, u.ID)]; isMember {
+			continue
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+func (r *memProjectRepo) TaskStats(_ context.Context, projectIDs []string) (map[string]*project.TaskStats, error) {
+	out := map[string]*project.TaskStats{}
+	for _, pid := range projectIDs {
+		out[pid] = &project.TaskStats{}
+	}
+	for _, t := range r.tasks {
+		st, ok := out[t.ProjectID]
+		if !ok {
+			continue
+		}
+		st.Total++
+		switch t.Status {
+		case project.TaskStatusTodo:
+			st.Todo++
+		case project.TaskStatusInProgress:
+			st.InProgress++
+		case project.TaskStatusBlocked:
+			st.Blocked++
+		case project.TaskStatusDone:
+			st.Done++
+		}
+	}
+	return out, nil
+}
+
 // ---- 夹具 ----
 
 type fixture struct {
@@ -229,6 +294,8 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{repo: newMemRepo(), users: newMemUsers()}
+	// 候选集与用户仓库共享同一底层 map(seed 自动可见)
+	f.repo.allUsers = f.users.byID
 	f.svc = project.NewService(f.repo, f.users)
 	return f
 }
@@ -522,6 +589,121 @@ func TestDeleteTask_OwnerOnly(t *testing.T) {
 	require.NoError(t, f.svc.DeleteTask(context.Background(), owner, task.ID))
 	list, _ := f.svc.ListTasks(context.Background(), owner, p.ID, project.ListFilter{})
 	assert.Empty(t, list)
+}
+
+// ---- F9 v2:任务类型 / 成员候选 / 进度统计 ----
+
+func TestCreateTask_WithType(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProject()
+	typeID := f.repo.seedType("实验")
+
+	req := project.CreateTaskRequest{Title: "跑实验", TypeID: &typeID}
+	view, err := f.svc.CreateTask(context.Background(), owner, p.ID, req)
+	require.NoError(t, err)
+	assert.NotNil(t, view.TypeID)
+	assert.Equal(t, typeID, *view.TypeID)
+	assert.NotNil(t, view.Type)
+	assert.Equal(t, "实验", view.Type.Name)
+
+	// 任务列表/详情同样携带 type 对象
+	list, err := f.svc.ListTasks(context.Background(), owner, p.ID, project.ListFilter{})
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "实验", list[0].Type.Name)
+}
+
+func TestCreateTask_InvalidType(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProject()
+	bad := "no-such-type"
+	_, err := f.svc.CreateTask(context.Background(), owner, p.ID,
+		project.CreateTaskRequest{Title: "t", TypeID: &bad})
+	assert.ErrorIs(t, err, project.ErrInvalidTaskType)
+}
+
+func TestUpdateTask_ClearType(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProject()
+	typeID := f.repo.seedType("文献")
+	task := f.seedTask(p, member)
+
+	// 设置为文献
+	_, err := f.svc.UpdateTask(context.Background(), owner, task.ID,
+		project.UpdateTaskRequest{TypeID: &typeID})
+	require.NoError(t, err)
+	got, _ := f.repo.GetTask(context.Background(), task.ID)
+	require.NotNil(t, got.TypeID)
+
+	// 传空串清除
+	empty := ""
+	_, err = f.svc.UpdateTask(context.Background(), owner, task.ID,
+		project.UpdateTaskRequest{TypeID: &empty})
+	require.NoError(t, err)
+	got2, _ := f.repo.GetTask(context.Background(), task.ID)
+	assert.Nil(t, got2.TypeID)
+}
+
+func TestListTaskTypes_ActiveOnly(t *testing.T) {
+	f := newFixture(t)
+	f.repo.seedType("实验")
+	list, err := f.svc.ListTaskTypes(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "实验", list[0].Name)
+}
+
+func TestListCandidateUsers_OwnerOnly(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProject() // 成员:owner + member;other 未入组
+	f.users.seed(other)
+
+	// owner 可看:返回未入组(other),不含已入组成员
+	cands, err := f.svc.ListCandidateUsers(context.Background(), owner, p.ID)
+	require.NoError(t, err)
+	var ids []string
+	for _, u := range cands {
+		ids = append(ids, u.ID)
+	}
+	assert.Contains(t, ids, other)
+	assert.NotContains(t, ids, owner)
+	assert.NotContains(t, ids, member)
+
+	// member(非 owner)→ 403;局外人(非成员)→ 403
+	_, err = f.svc.ListCandidateUsers(context.Background(), member, p.ID)
+	assert.ErrorIs(t, err, project.ErrNotOwner)
+	_, err = f.svc.ListCandidateUsers(context.Background(), "outsider", p.ID)
+	assert.ErrorIs(t, err, project.ErrNotOwner)
+}
+
+func TestProjectView_Stats(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProject()
+	f.seedTask(p, member) // todo
+
+	// 列表与详情都带 stats
+	list, err := f.svc.ListProjects(context.Background(), owner)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.NotNil(t, list[0].Stats)
+	assert.Equal(t, 1, list[0].Stats.Total)
+	assert.Equal(t, 1, list[0].Stats.Todo)
+
+	detail, err := f.svc.GetProject(context.Background(), member, p.ID)
+	require.NoError(t, err)
+	require.NotNil(t, detail.Stats)
+	assert.Equal(t, 1, detail.Stats.Total)
+
+	// 流转到 done 后统计更新
+	task := f.seedTask(p, member)
+	_, err = f.svc.TransitionTask(context.Background(), owner, task.ID, project.TaskStatusInProgress)
+	require.NoError(t, err)
+	_, err = f.svc.TransitionTask(context.Background(), owner, task.ID, project.TaskStatusDone)
+	require.NoError(t, err)
+	detail2, err := f.svc.GetProject(context.Background(), owner, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, detail2.Stats.Total)
+	assert.Equal(t, 1, detail2.Stats.Done)
 }
 
 func strPtr(s string) *string { return &s }

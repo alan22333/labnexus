@@ -32,6 +32,7 @@ var (
 	ErrMemberExists       = errors.New("member already exists")
 	ErrCannotRemoveOwner  = errors.New("cannot remove project owner")
 	ErrInvalidLinkType    = errors.New("invalid link target type")
+	ErrInvalidTaskType    = errors.New("invalid task type")
 )
 
 // 成员角色
@@ -82,13 +83,6 @@ type MemberView struct {
 	Role string     `json:"role"`
 }
 
-// TaskView 任务视图
-type TaskView struct {
-	*Task
-	Assignee *user.User  `json:"assignee,omitempty"`
-	Links    []*TaskLink `json:"links,omitempty"`
-}
-
 // ProjectView 项目视图
 type ProjectView struct {
 	*Project
@@ -96,6 +90,15 @@ type ProjectView struct {
 	Members    []*MemberView `json:"members"`
 	Milestones []*Milestone  `json:"milestones"`
 	Tasks      []*TaskView   `json:"tasks"`
+	Stats      *TaskStats    `json:"stats,omitempty"`
+}
+
+// TaskView 任务视图(F9 v2:携带类型对象 type:{id,name,color})
+type TaskView struct {
+	*Task
+	Type     *TaskType   `json:"type,omitempty"`
+	Assignee *user.User  `json:"assignee,omitempty"`
+	Links    []*TaskLink `json:"links,omitempty"`
 }
 
 // ---- 请求 ----
@@ -130,6 +133,7 @@ type UpdateMilestoneRequest struct {
 type CreateTaskRequest struct {
 	Title          string  `json:"title"`
 	Description    string  `json:"description"`
+	TypeID         *string `json:"type_id"`
 	AssigneeID     *string `json:"assignee_id"`
 	Priority       string  `json:"priority"`
 	DueDate        *string `json:"due_date"`
@@ -141,6 +145,7 @@ type CreateTaskRequest struct {
 type UpdateTaskRequest struct {
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
+	TypeID      *string `json:"type_id"`
 	Priority    *string `json:"priority"`
 	DueDate     *string `json:"due_date"`
 	AssigneeID  *string `json:"assignee_id"`
@@ -171,10 +176,17 @@ func (s *Service) CreateProject(ctx context.Context, userID string, req CreatePr
 	if err != nil {
 		return nil, err
 	}
-	return s.buildProjectView(ctx, p, false)
+	view, err := s.buildProjectView(ctx, p, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachStats(ctx, []*ProjectView{view}); err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
-// ListProjects 本人参与的项目列表。
+// ListProjects 本人参与的项目列表(轻量视图 + 进度统计)。
 func (s *Service) ListProjects(ctx context.Context, userID string) ([]*ProjectView, error) {
 	list, err := s.repo.ListProjectsByMember(ctx, userID)
 	if err != nil {
@@ -188,10 +200,36 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]*ProjectVi
 		}
 		views = append(views, view)
 	}
+	if err := s.attachStats(ctx, views); err != nil {
+		return nil, err
+	}
 	return views, nil
 }
 
-// GetProject 项目详情(成员可见,含全部子资源)。
+// attachStats 批量填充项目进度统计(一次聚合,避免 N+1)。
+func (s *Service) attachStats(ctx context.Context, views []*ProjectView) error {
+	if len(views) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(views))
+	for _, v := range views {
+		ids = append(ids, v.ID)
+	}
+	stats, err := s.repo.TaskStats(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for _, v := range views {
+		if st, ok := stats[v.ID]; ok {
+			v.Stats = st
+		} else {
+			v.Stats = &TaskStats{}
+		}
+	}
+	return nil
+}
+
+// GetProject 项目详情(成员可见,含全部子资源 + 进度统计)。
 func (s *Service) GetProject(ctx context.Context, userID, projectID string) (*ProjectView, error) {
 	p, err := s.repo.GetProject(ctx, projectID)
 	if err != nil {
@@ -200,7 +238,14 @@ func (s *Service) GetProject(ctx context.Context, userID, projectID string) (*Pr
 	if _, err := s.repo.GetMember(ctx, p.ID, userID); err != nil {
 		return nil, ErrNotMember
 	}
-	return s.buildProjectView(ctx, p, true)
+	view, err := s.buildProjectView(ctx, p, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachStats(ctx, []*ProjectView{view}); err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
 // UpdateProject 修改项目(仅 owner)。
@@ -225,7 +270,14 @@ func (s *Service) UpdateProject(ctx context.Context, userID, projectID string, r
 	if err := s.repo.UpdateProject(ctx, p); err != nil {
 		return nil, err
 	}
-	return s.buildProjectView(ctx, p, true)
+	view, err := s.buildProjectView(ctx, p, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachStats(ctx, []*ProjectView{view}); err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
 // ---- 成员 ----
@@ -360,9 +412,13 @@ func (s *Service) CreateTask(ctx context.Context, userID, projectID string, req 
 			return nil, ErrMilestoneNotFound
 		}
 	}
+	typeID, err := s.resolveTaskType(ctx, req.TypeID)
+	if err != nil {
+		return nil, err
+	}
 
-	task := NewTask(projectID, req.Title, req.Description, req.AssigneeID, priority, req.DueDate, req.MilestoneID)
-	err := s.txRunner(ctx, func(tctx context.Context) error {
+	task := NewTask(projectID, req.Title, req.Description, typeID, req.AssigneeID, priority, req.DueDate, req.MilestoneID)
+	err = s.txRunner(ctx, func(tctx context.Context) error {
 		if err := s.repo.CreateTask(tctx, task); err != nil {
 			return err
 		}
@@ -431,6 +487,18 @@ func (s *Service) UpdateTask(ctx context.Context, userID, taskID string, req Upd
 		}
 		task.MilestoneID = req.MilestoneID
 	}
+	if req.TypeID != nil {
+		// 显式传空串 = 清除类型;缺省字段(null/未传)不改变
+		if *req.TypeID == "" {
+			task.TypeID = nil
+		} else {
+			typeID, err := s.resolveTaskType(ctx, req.TypeID)
+			if err != nil {
+				return nil, err
+			}
+			task.TypeID = typeID
+		}
+	}
 	task.UpdatedAt = time.Now()
 	if err := s.repo.UpdateTask(ctx, task); err != nil {
 		return nil, err
@@ -475,6 +543,31 @@ func (s *Service) DeleteTask(ctx context.Context, userID, taskID string) error {
 		return err
 	}
 	return s.repo.SoftDeleteTask(ctx, task.ID)
+}
+
+// resolveTaskType 校验并归一化任务类型 id:空值 → nil;非空须存在且 active。
+func (s *Service) resolveTaskType(ctx context.Context, typeID *string) (*string, error) {
+	if typeID == nil || strings.TrimSpace(*typeID) == "" {
+		return nil, nil
+	}
+	t, err := s.repo.GetTaskType(ctx, *typeID)
+	if err != nil || !t.Active {
+		return nil, ErrInvalidTaskType
+	}
+	return typeID, nil
+}
+
+// ListTaskTypes 任务类型字典(仅 active)。
+func (s *Service) ListTaskTypes(ctx context.Context) ([]*TaskType, error) {
+	return s.repo.ListTaskTypes(ctx)
+}
+
+// ListCandidateUsers 加成员候选(仅 owner;未入组用户,按 display_name 排序)。
+func (s *Service) ListCandidateUsers(ctx context.Context, userID, projectID string) ([]*user.User, error) {
+	if _, err := s.requireOwner(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListCandidateUsers(ctx, projectID)
 }
 
 // ---- 内部 helper ----
@@ -592,15 +685,19 @@ func (s *Service) buildTaskView(ctx context.Context, task *Task) (*TaskView, err
 	return views[0], nil
 }
 
-// buildTaskViews 批量组装任务视图(assignee/links 一次查询,防 N+1)。
+// buildTaskViews 批量组装任务视图(assignee/links/type 一次查询,防 N+1)。
 func (s *Service) buildTaskViews(ctx context.Context, tasks []*Task) ([]*TaskView, error) {
 	if len(tasks) == 0 {
 		return []*TaskView{}, nil
 	}
 	assigneeIDs := make([]string, 0, len(tasks))
+	typeIDs := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		if t.AssigneeID != nil {
 			assigneeIDs = append(assigneeIDs, *t.AssigneeID)
+		}
+		if t.TypeID != nil {
+			typeIDs = append(typeIDs, *t.TypeID)
 		}
 	}
 	users, err := s.users.GetByIDs(ctx, assigneeIDs)
@@ -610,6 +707,16 @@ func (s *Service) buildTaskViews(ctx context.Context, tasks []*Task) ([]*TaskVie
 	userByID := make(map[string]*user.User, len(users))
 	for _, u := range users {
 		userByID[u.ID] = u
+	}
+	// 类型:仅需展示用,缺失(如类型停用)不阻塞 —— 查一次并容忍单个失败
+	typeByID := map[string]*TaskType{}
+	if len(typeIDs) > 0 {
+		types, err := s.repo.ListTaskTypes(ctx)
+		if err == nil {
+			for _, ty := range types {
+				typeByID[ty.ID] = ty
+			}
+		}
 	}
 	views := make([]*TaskView, 0, len(tasks))
 	for _, t := range tasks {
@@ -621,7 +728,11 @@ func (s *Service) buildTaskViews(ctx context.Context, tasks []*Task) ([]*TaskVie
 		if t.AssigneeID != nil {
 			assignee = userByID[*t.AssigneeID]
 		}
-		views = append(views, &TaskView{Task: t, Assignee: assignee, Links: links})
+		var typ *TaskType
+		if t.TypeID != nil {
+			typ = typeByID[*t.TypeID]
+		}
+		views = append(views, &TaskView{Task: t, Type: typ, Assignee: assignee, Links: links})
 	}
 	return views, nil
 }

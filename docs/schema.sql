@@ -171,12 +171,24 @@ CREATE TABLE milestones (
 );
 CREATE INDEX idx_milestones_project ON milestones(project_id);
 
+-- 任务类型字典(课题组级;内置种子由 app.Build 幂等写入;管理界面随管理后台轮次)
+CREATE TABLE task_types (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       VARCHAR(50) NOT NULL UNIQUE,
+    color      VARCHAR(20) NOT NULL DEFAULT '#94a3b8',
+    sort       INT NOT NULL DEFAULT 0,
+    builtin    BOOLEAN NOT NULL DEFAULT FALSE,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 任务(状态机:todo → in_progress → blocked / done,流转校验在 service 层)
 CREATE TABLE tasks (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title        VARCHAR(200) NOT NULL,
     description  TEXT NOT NULL DEFAULT '',
+    type_id      UUID REFERENCES task_types(id) ON DELETE SET NULL,
     assignee_id  UUID REFERENCES users(id) ON DELETE SET NULL,
     status       VARCHAR(20) NOT NULL DEFAULT 'todo', -- todo / in_progress / blocked / done
     priority     VARCHAR(10) NOT NULL DEFAULT 'medium', -- high / medium / low
@@ -188,6 +200,7 @@ CREATE TABLE tasks (
 );
 CREATE INDEX idx_tasks_project ON tasks(project_id);
 CREATE INDEX idx_tasks_assignee ON tasks(assignee_id);
+CREATE INDEX idx_tasks_type ON tasks(type_id);
 
 -- 任务关联(多态:可关联文档或资源;target_id 无外键,由应用层保证完整性)
 CREATE TABLE task_links (

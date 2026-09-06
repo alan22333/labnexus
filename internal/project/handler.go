@@ -29,6 +29,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed.POST("/projects", h.Create)
 	authed.GET("/projects/:id", h.Get)
 	authed.PATCH("/projects/:id", h.Update)
+	authed.GET("/projects/:id/candidates", h.ListCandidates)
 	authed.POST("/projects/:id/members", h.AddMember)
 	authed.DELETE("/projects/:id/members/:user_id", h.RemoveMember)
 	authed.POST("/projects/:id/milestones", h.CreateMilestone)
@@ -38,6 +39,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed.PATCH("/tasks/:id", h.UpdateTask)
 	authed.POST("/tasks/:id/transition", h.TransitionTask)
 	authed.DELETE("/tasks/:id", h.DeleteTask)
+	authed.GET("/task-types", h.ListTaskTypes)
 }
 
 func (h *Handler) userID(c *gin.Context) string {
@@ -211,6 +213,28 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// ---- 任务类型 / 成员候选 ----
+
+// ListTaskTypes 任务类型字典(仅 active)。
+func (h *Handler) ListTaskTypes(c *gin.Context) {
+	list, err := h.svc.ListTaskTypes(c.Request.Context())
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task_types": list})
+}
+
+// ListCandidates 加成员候选(仅 owner)。
+func (h *Handler) ListCandidates(c *gin.Context) {
+	users, err := h.svc.ListCandidateUsers(c.Request.Context(), h.userID(c), c.Param("id"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
 // ---- 错误映射 ----
 
 func respondServiceError(c *gin.Context, err error) {
@@ -225,7 +249,7 @@ func respondServiceError(c *gin.Context, err error) {
 		errors.Is(err, ErrInvalidTaskStatus), errors.Is(err, ErrInvalidTransition),
 		errors.Is(err, ErrInvalidDate), errors.Is(err, ErrAssigneeNotMember),
 		errors.Is(err, ErrMemberExists), errors.Is(err, ErrCannotRemoveOwner),
-		errors.Is(err, ErrInvalidLinkType):
+		errors.Is(err, ErrInvalidLinkType), errors.Is(err, ErrInvalidTaskType):
 		respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())
 	default:
 		respondError(c, http.StatusInternalServerError, "INTERNAL", "internal error")

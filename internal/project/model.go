@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"labnexus/internal/database"
+	"labnexus/internal/user"
 )
 
 // ErrNotFound 记录不存在
@@ -31,6 +32,37 @@ const (
 	ProjectStatusActive = "active"
 	ProjectStatusDone   = "done"
 )
+
+// DefaultTaskTypes 内置任务类型种子(name, color, sort)。
+var DefaultTaskTypes = []struct {
+	Name  string
+	Color string
+	Sort  int
+}{
+	{"实验", "#3b82f6", 1},
+	{"文献", "#8b5cf6", 2},
+	{"写作", "#10b981", 3},
+	{"代码", "#f59e0b", 4},
+	{"其他", "#94a3b8", 5},
+}
+
+// SeedDefaultTaskTypes 幂等写入内置类型(名已存在则跳过;app.Build 与集成测试重建时调用)。
+func SeedDefaultTaskTypes(ctx context.Context, db *gorm.DB) error {
+	for _, d := range DefaultTaskTypes {
+		var count int64
+		if err := db.WithContext(ctx).Model(&TaskType{}).Where("name = ?", d.Name).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		ty := NewTaskType(d.Name, d.Color, d.Sort, true)
+		if err := db.WithContext(ctx).Create(ty).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Project 项目(schema.sql: projects)
 type Project struct {
@@ -70,12 +102,32 @@ type Milestone struct {
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
+// TaskType 任务类型字典(schema.sql: task_types;课题组级,管理界面随管理后台)
+type TaskType struct {
+	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
+	Name      string    `gorm:"size:50;uniqueIndex" json:"name"`
+	Color     string    `gorm:"size:20;default:#94a3b8" json:"color"`
+	Sort      int       `gorm:"default:0" json:"sort"`
+	Builtin   bool      `gorm:"default:false" json:"builtin"`
+	Active    bool      `gorm:"default:true" json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// NewTaskType 构造任务类型。
+func NewTaskType(name, color string, sort int, builtin bool) *TaskType {
+	return &TaskType{
+		ID: uuid.NewString(), Name: name, Color: color, Sort: sort,
+		Builtin: builtin, Active: true, CreatedAt: time.Now(),
+	}
+}
+
 // Task 任务(schema.sql: tasks;DeletedAt 软删除)
 type Task struct {
 	ID          string         `gorm:"type:uuid;primaryKey" json:"id"`
 	ProjectID   string         `gorm:"type:uuid;index" json:"project_id"`
 	Title       string         `gorm:"size:200" json:"title"`
 	Description string         `gorm:"type:text" json:"description"`
+	TypeID      *string        `gorm:"type:uuid;index" json:"type_id,omitempty"`
 	AssigneeID  *string        `gorm:"type:uuid;index" json:"assignee_id,omitempty"`
 	Status      string         `gorm:"size:20;default:todo" json:"status"`
 	Priority    string         `gorm:"size:10;default:medium" json:"priority"`
@@ -87,11 +139,11 @@ type Task struct {
 }
 
 // NewTask 构造任务。
-func NewTask(projectID, title, description string, assigneeID *string, priority string, dueDate *string, milestoneID *string) *Task {
+func NewTask(projectID, title, description string, typeID, assigneeID *string, priority string, dueDate *string, milestoneID *string) *Task {
 	now := time.Now()
 	return &Task{
 		ID: uuid.NewString(), ProjectID: projectID, Title: title, Description: description,
-		AssigneeID: assigneeID, Status: TaskStatusTodo, Priority: priority,
+		TypeID: typeID, AssigneeID: assigneeID, Status: TaskStatusTodo, Priority: priority,
 		DueDate: dueDate, MilestoneID: milestoneID,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -138,6 +190,24 @@ type Repository interface {
 
 	LinkTask(ctx context.Context, taskID, targetType, targetID string) error
 	ListLinks(ctx context.Context, taskID string) ([]*TaskLink, error)
+
+	// 任务类型字典(F9 v2;candidates/stats 见 specs/f9-project.md §8)
+	ListTaskTypes(ctx context.Context) ([]*TaskType, error)
+	GetTaskType(ctx context.Context, id string) (*TaskType, error)
+	// ListCandidateUsers 返回未入组用户(加成员候选,排除已入组成员)。
+	ListCandidateUsers(ctx context.Context, projectID string) ([]*user.User, error)
+	// TaskStats 按项目批量统计任务(含过期数);返回 map[projectID]*TaskStats。
+	TaskStats(ctx context.Context, projectIDs []string) (map[string]*TaskStats, error)
+}
+
+// TaskStats 项目任务进度统计。
+type TaskStats struct {
+	Total      int `json:"total"`
+	Todo       int `json:"todo"`
+	InProgress int `json:"in_progress"`
+	Blocked    int `json:"blocked"`
+	Done       int `json:"done"`
+	Overdue    int `json:"overdue"`
 }
 
 // GormRepository 项目域 GORM 实现
@@ -305,4 +375,75 @@ func (r *GormRepository) ListLinks(ctx context.Context, taskID string) ([]*TaskL
 	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
 		Where("task_id = ?", taskID).Find(&list).Error
 	return list, err
+}
+
+// ---- F9 v2:任务类型字典 / 加成员候选 / 进度统计 ----
+
+func (r *GormRepository) ListTaskTypes(ctx context.Context) ([]*TaskType, error) {
+	var list []*TaskType
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Where("active = ?", true).Order("sort ASC, name ASC").Find(&list).Error
+	return list, err
+}
+
+func (r *GormRepository) GetTaskType(ctx context.Context, id string) (*TaskType, error) {
+	var t TaskType
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).First(&t, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *GormRepository) ListCandidateUsers(ctx context.Context, projectID string) ([]*user.User, error) {
+	var list []*user.User
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Raw(`SELECT id, username, display_name, role, avatar_url, created_at, updated_at
+		     FROM users
+		     WHERE id NOT IN (SELECT user_id FROM project_members WHERE project_id = ?)
+		     ORDER BY display_name`, projectID).
+		Scan(&list).Error
+	return list, err
+}
+
+// TaskStats 按项目统计任务状态分布与过期数。
+// overdue = 非 done 且 due_date < 今天(数据库 CURRENT_DATE,与前端同库)。
+func (r *GormRepository) TaskStats(ctx context.Context, projectIDs []string) (map[string]*TaskStats, error) {
+	out := map[string]*TaskStats{}
+	if len(projectIDs) == 0 {
+		return out, nil
+	}
+	rows := []struct {
+		ProjectID  string
+		Total      int
+		Todo       int
+		InProgress int
+		Blocked    int
+		Done       int
+		Overdue    int
+	}{}
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Raw(`SELECT project_id,
+		       COUNT(*) AS total,
+		       COUNT(*) FILTER (WHERE status = 'todo') AS todo,
+		       COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress,
+		       COUNT(*) FILTER (WHERE status = 'blocked') AS blocked,
+		       COUNT(*) FILTER (WHERE status = 'done') AS done,
+		       COUNT(*) FILTER (WHERE status <> 'done' AND due_date < CURRENT_DATE) AS overdue
+		     FROM tasks WHERE project_id IN ? AND deleted_at IS NULL
+		     GROUP BY project_id`, projectIDs).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ProjectID] = &TaskStats{
+			Total: row.Total, Todo: row.Todo, InProgress: row.InProgress,
+			Blocked: row.Blocked, Done: row.Done, Overdue: row.Overdue,
+		}
+	}
+	return out, nil
 }

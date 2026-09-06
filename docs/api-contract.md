@@ -132,13 +132,17 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 | POST | `/projects/:id/milestones` | 🧑💼 | `{name, due_date?}` | `201 {milestone}` |
 | PATCH | `/milestones/:id` | 🧑💼 | `{name?, due_date?, completed_at?}` | `{milestone}` |
 | GET | `/projects/:id/tasks` | 🔐(成员) | query:`status?, assignee_id?, milestone_id?` | `{tasks: []}` |
-| POST | `/projects/:id/tasks` | 🔐(成员) | `{title, description?, assignee_id?, priority?, due_date?, milestone_id?, link_document_id?, link_resource_id?}` | `201 {task}` |
-| PATCH | `/tasks/:id` | 🔐(负责人/指派者) | `{title?, description?, priority?, due_date?, assignee_id?, milestone_id?}` | `{task}` |
+| POST | `/projects/:id/tasks` | 🔐(成员) | `{title, description?, type_id?, assignee_id?, priority?, due_date?, milestone_id?, link_document_id?, link_resource_id?}` | `201 {task}` |
+| PATCH | `/tasks/:id` | 🔐(负责人/指派者) | `{title?, description?, type_id?, priority?, due_date?, assignee_id?, milestone_id?}` | `{task}` |
 | POST | `/tasks/:id/transition` | 🔐(负责人/指派者) | `{status}` | `{task}` |
 | DELETE | `/tasks/:id` | 🔐(负责人) | — | `204`(软删除) |
+| GET | `/task-types` | 🔐 | — | `{task_types: []}`(active 类型字典) |
+| GET | `/projects/:id/candidates` | 🧑💼 | — | `{users: []}`(未入组用户,加成员下拉) |
 
-- `project` 结构:`{id, name, description, status, owner:{id,display_name}, created_at}`
-- `task` 结构:`{id, title, description, status, priority, due_date, milestone_id, assignee:{id,display_name}, created_at, updated_at}`
+- `project` 结构:`{id, name, description, status, stats, owner:{id,display_name}, created_at}`
+- `stats`(项目进度统计):`{total, todo, in_progress, blocked, done, overdue}`;overdue = 状态非 done 且 due_date < 今天;统计仅含未删除任务。
+- `task_type` 结构:`{id, name, color, builtin, sort, active}`;`GET /task-types` 仅返回 active。
+- `task` 结构:`{id, title, description, status, priority, type:{id,name,color}?, type_id?, due_date, milestone_id, assignee:{id,display_name}, created_at, updated_at}`;`type` 为任务关联类型对象(未设置时省略)。
 - **状态机**(service 层校验合法迁移):`todo → in_progress → blocked → todo`(受阻后可回进行中)、`in_progress → done`;done 为终态;其余迁移返回 `VALIDATION` 错误。
 
 ## 阶段 3:经费管理(F10,仅 admin/supervisor)

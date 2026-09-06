@@ -38,9 +38,13 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		&tag.Tag{},
 		&resource.Resource{}, &resource.ResourceTag{},
 		&project.Project{}, &project.ProjectMember{}, &project.Milestone{}, &project.Task{}, &project.TaskLink{},
+		&project.TaskType{},
 		&finance.TurnoverBatch{}, &finance.Participant{}, &finance.TurnoverItem{},
 		&finance.TurnoverSubmission{}, &finance.Account{}, &finance.Transaction{},
 	); err != nil {
+		return nil, err
+	}
+	if err := project.SeedDefaultTaskTypes(context.Background(), db); err != nil {
 		return nil, err
 	}
 	slog.Info("database migrated")

@@ -62,3 +62,40 @@
 - [x] §1.3 checklist 通过(2026-08-22)
 - [x] 已实现并验收:单元/handler 测试全绿,集成测试(project_test.go)+ 端到端冒烟通过(scripts/smoke-project.sh),`make check` 全绿(2026-08-22)
 - [x] 深度接口测试:数据隔离/越权矩阵/状态机全表/边界/软删除/契约结构(project_deep_test.go)
+
+## 8. v2 体验优化(2026-09,对应正式 React 前端)
+
+> 动因:项目模块被反馈"太粗糙"。React 正式前端接管后,补齐三块能力:
+> **任务类型字典**(可后台管理,管理界面随管理后台轮次落地)、**项目进度统计**、**加成员候选下拉**。
+
+### 8.1 行为需求
+
+1. **任务类型字典**:
+   - 新增 `task_types` 表(课题组级全局字典):name 唯一、color、sort、builtin、active;
+   - 内置种子类型(实验/文献/写作/代码/其他,builtin=true),幂等写入(app.Build 后与集成测试重建时);
+   - `GET /api/task-types`(🔐 登录即可)返回 active 类型,用于任务表单下拉;
+   - 任务新增 `type_id`(可空,指向 task_types);创建/编辑任务可带 `type_id`,须存在且 active,否则 400;
+   - 任务 JSON 携带嵌套 `type:{id,name,color}`,看板卡片显示类型标签;
+   - 类型的增删改(后台管理)不在本规格范围 —— 归入「管理后台」功能轮次。
+2. **项目进度统计**:
+   - 项目对象(列表 + 详情)新增 `stats`:`{total, todo, in_progress, blocked, done, overdue}`;
+   - 统计口径:未删除任务;`overdue` = 状态非 done 且 due_date < 今天(SQL CURRENT_DATE);
+   - 列表接口一次聚合查询,不 N+1。
+3. **加成员候选**:
+   - `GET /projects/:id/candidates`(仅 owner):返回**未入组**用户列表(按 display_name),前端加成员弹窗改成下拉选择,不再手填 UUID;
+   - 非 owner(成员/局外人)→ 403。
+
+### 8.2 接口变化
+
+契约 §F9 追加:
+`GET /api/task-types`、`GET /projects/:id/candidates`;任务创建/编辑请求与响应增加 type 相关字段;
+项目响应增加 `stats`。schema.sql 增加 task_types 表与 tasks.type_id。
+
+### 8.3 验收标准(可测清单)
+
+- [ ] GET /api/task-types:登录 200 含内置类型;未登录 401
+- [ ] 建任务带合法 type_id:201 且响应含 type 对象;带不存在/非 active type_id → 400
+- [ ] 任务详情/列表含 type 对象(设置了 type_id 时)
+- [ ] 项目列表与详情均含 stats;计数与 DB 一致;过期任务计入 overdue
+- [ ] candidates:owner 200 且不含已有成员/自己;成员、局外人 → 403
+- [ ] 上述全部有集成测试覆盖;`make check` 全绿
