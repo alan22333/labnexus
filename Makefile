@@ -2,7 +2,8 @@
 # 规范依据:docs/standards.md §8
 # 使用:make <target>;提交前必跑 make check
 
-.PHONY: up down run build test lint check tidy seed-admin
+.PHONY: up down run build test lint check tidy seed-admin \
+	migrate-up migrate-down migrate-status migrate-baseline backup restore
 
 ## 容器
 up:
@@ -25,6 +26,28 @@ build:
 
 tidy:
 	go mod tidy
+
+## 数据库迁移(goose,见 docs/specs/database-migration-backup.md)
+migrate-up:
+	go run ./cmd/migrate up
+
+migrate-down:
+	go run ./cmd/migrate down
+
+migrate-status:
+	go run ./cmd/migrate status
+
+# 已有 AutoMigrate 库的一次性基线标记(保留数据);空库等价 migrate-up
+migrate-baseline:
+	go run ./cmd/migrate baseline
+
+## 备份恢复(PostgreSQL custom dump + 上传目录 + 校验清单)
+backup:
+	bash scripts/backup.sh
+
+# 用法:make restore FILE=backups/xxx.tar.gz CONFIRM=yes
+restore:
+	bash scripts/restore.sh
 
 ## 质量
 test:

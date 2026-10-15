@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -51,7 +52,14 @@ func setupServer(t *testing.T) *gin.Engine {
 	if err != nil {
 		t.Skipf("集成环境未就绪(先 `make up` 启动 Postgres/Redis): %v", err)
 	}
-	// 先迁移建表(与生产一致),再清数据
+	// 先通过版本化迁移建表/升级(空库与既有 AutoMigrate 库均可),再清数据。
+	migrationDir := filepath.Join(wd, "..", "..", "migrations")
+	baselineErr := database.MigrateBaseline(context.Background(), cfg, migrationDir)
+	if errors.Is(baselineErr, database.ErrBaselineAlreadyVersioned) {
+		require.NoError(t, database.MigrateUp(context.Background(), cfg, migrationDir), "迁移数据库失败")
+	} else {
+		require.NoError(t, baselineErr, "基线迁移失败")
+	}
 	r, err := app.Build(cfg)
 	require.NoError(t, err, "app.Build 失败")
 	resetData(t, db, cfg)
