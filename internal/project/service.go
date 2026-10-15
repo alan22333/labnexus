@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"labnexus/internal/authz"
 	"labnexus/internal/database"
 	"labnexus/internal/user"
 )
@@ -62,14 +63,24 @@ var validPriorities = map[string]bool{
 
 // Service 项目业务逻辑
 type Service struct {
-	repo     Repository
-	users    user.Repository
-	txRunner database.TxRunner
+	repo       Repository
+	users      user.Repository
+	txRunner   database.TxRunner
+	authorizer authz.Authorizer
 }
 
 // NewService 构造函数(依赖注入)
 func NewService(repo Repository, users user.Repository) *Service {
-	return &Service{repo: repo, users: users, txRunner: database.NoopTxRunner()}
+	return &Service{
+		repo: repo, users: users, txRunner: database.NoopTxRunner(),
+		authorizer: authz.New(users, authz.Options{}),
+	}
+}
+
+// WithAuthorizer 注入统一授权器。
+func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
+	s.authorizer = a
+	return s
 }
 
 // WithTxRunner 注入事务运行器。
@@ -234,12 +245,9 @@ func (s *Service) attachStats(ctx context.Context, views []*ProjectView) error {
 
 // GetProject 项目详情(成员可见,含全部子资源 + 进度统计)。
 func (s *Service) GetProject(ctx context.Context, userID, projectID string) (*ProjectView, error) {
-	p, err := s.repo.GetProject(ctx, projectID)
+	p, err := s.requireMember(ctx, userID, projectID)
 	if err != nil {
-		return nil, ErrProjectNotFound
-	}
-	if _, err := s.repo.GetMember(ctx, p.ID, userID); err != nil {
-		return nil, ErrNotMember
+		return nil, err
 	}
 	view, err := s.buildProjectView(ctx, p, true)
 	if err != nil {
@@ -684,7 +692,13 @@ func (s *Service) requireOwner(ctx context.Context, userID, projectID string) (*
 	if err != nil {
 		return nil, ErrNotOwner
 	}
-	if m.Role != MemberRoleOwner {
+	ok, err := s.authorizer.Can(ctx, userID, authz.ActionManage, authz.Target{
+		Resource: authz.ResourceProject, ProjectRole: m.Role,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrNotOwner
 	}
 	return p, nil
@@ -696,7 +710,17 @@ func (s *Service) requireMember(ctx context.Context, userID, projectID string) (
 	if err != nil {
 		return nil, ErrProjectNotFound
 	}
-	if _, err := s.repo.GetMember(ctx, projectID, userID); err != nil {
+	m, err := s.repo.GetMember(ctx, projectID, userID)
+	if err != nil {
+		return nil, ErrNotMember
+	}
+	ok, err := s.authorizer.Can(ctx, userID, authz.ActionRead, authz.Target{
+		Resource: authz.ResourceProject, ProjectRole: m.Role,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrNotMember
 	}
 	return p, nil
@@ -704,14 +728,17 @@ func (s *Service) requireMember(ctx context.Context, userID, projectID string) (
 
 // canManageTask owner 或任务指派者。
 func (s *Service) canManageTask(ctx context.Context, userID string, task *Task) (bool, error) {
+	target := authz.Target{Resource: authz.ResourceTask}
 	if task.AssigneeID != nil && *task.AssigneeID == userID {
-		return true, nil
+		target.AssigneeID = *task.AssigneeID
+		return s.authorizer.Can(ctx, userID, authz.ActionManage, target)
 	}
 	m, err := s.repo.GetMember(ctx, task.ProjectID, userID)
 	if err != nil {
 		return false, ErrNotMember
 	}
-	return m.Role == MemberRoleOwner, nil
+	target.ProjectRole = m.Role
+	return s.authorizer.Can(ctx, userID, authz.ActionManage, target)
 }
 
 // buildProjectView 组装项目视图(详情含全部子资源,列表仅 owner)。

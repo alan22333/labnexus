@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/xuri/excelize/v2"
 
+	"labnexus/internal/authz"
 	"labnexus/internal/database"
 	"labnexus/internal/user"
 )
@@ -58,6 +59,7 @@ type Service struct {
 	txRunner database.TxRunner
 	previews ImportPreviewStore
 	now      func() time.Time
+	authz    authz.Authorizer
 }
 
 // NewService 构造函数(依赖注入)。
@@ -67,7 +69,14 @@ func NewService(repo Repository, users user.Repository) *Service {
 		users:    users,
 		txRunner: database.NoopTxRunner(),
 		now:      time.Now,
+		authz:    authz.New(users, authz.Options{}),
 	}
+}
+
+// WithAuthorizer 注入统一授权器。
+func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
+	s.authz = a
+	return s
 }
 
 // WithTxRunner 注入事务运行器。
@@ -185,11 +194,11 @@ type LedgerRequest struct {
 
 // requireFinance 校验 admin/supervisor 角色。
 func (s *Service) requireFinance(ctx context.Context, userID string) error {
-	u, err := s.users.GetByID(ctx, userID)
+	ok, err := s.authz.Can(ctx, userID, authz.ActionManage, authz.Target{Resource: authz.ResourceFinance})
 	if err != nil {
 		return err
 	}
-	if u.Role != user.RoleAdmin && u.Role != user.RoleSupervisor {
+	if !ok {
 		return ErrForbidden
 	}
 	return nil

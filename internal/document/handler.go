@@ -151,7 +151,7 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 }
 
 func (h *Handler) ListComments(c *gin.Context) {
-	views, err := h.svc.ListComments(c.Request.Context(), c.Param("id"))
+	views, err := h.svc.ListComments(c.Request.Context(), h.userID(c), c.Param("id"))
 	if err != nil {
 		respondServiceError(c, err)
 		return

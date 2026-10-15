@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"labnexus/internal/authz"
 	"labnexus/internal/project"
 	"labnexus/internal/user"
 )
@@ -44,25 +45,32 @@ type TaskTypeManager interface {
 
 // Service 管理后台业务逻辑(依赖注入)。
 type Service struct {
-	users     user.Repository
-	invites   user.InviteRepository
-	taskTypes TaskTypeManager
+	users      user.Repository
+	invites    user.InviteRepository
+	taskTypes  TaskTypeManager
+	authorizer authz.Authorizer
 }
 
 // NewService 构造函数。
 func NewService(users user.Repository, invites user.InviteRepository, taskTypes TaskTypeManager) *Service {
-	return &Service{users: users, invites: invites, taskTypes: taskTypes}
+	return &Service{
+		users: users, invites: invites, taskTypes: taskTypes,
+		authorizer: authz.New(users, authz.Options{}),
+	}
+}
+
+// WithAuthorizer 注入统一授权器(应用装配使用;测试可注入可控替身)。
+func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
+	s.authorizer = a
+	return s
 }
 
 // ---- 角色校验 ----
 
 // requireAdmin 校验 actor 为 admin。
 func (s *Service) requireAdmin(ctx context.Context, actorID string) error {
-	u, err := s.users.GetByID(ctx, actorID)
-	if err != nil {
-		return ErrForbidden
-	}
-	if u.Role != user.RoleAdmin {
+	ok, err := s.authorizer.Can(ctx, actorID, authz.ActionManage, authz.Target{Resource: authz.ResourceAdminConsole})
+	if err != nil || !ok {
 		return ErrForbidden
 	}
 	return nil

@@ -770,7 +770,7 @@ func TestDeleteComment_AuthorOnly(t *testing.T) {
 	require.ErrorIs(t, f.svc.DeleteComment(context.Background(), userA, comment.ID), document.ErrCommentForbidden)
 	require.NoError(t, f.svc.DeleteComment(context.Background(), userB, comment.ID))
 
-	views, err := f.svc.ListComments(context.Background(), doc.ID)
+	views, err := f.svc.ListComments(context.Background(), userA, doc.ID)
 	require.NoError(t, err)
 	assert.Empty(t, views)
 }

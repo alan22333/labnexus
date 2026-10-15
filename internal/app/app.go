@@ -12,6 +12,7 @@ import (
 
 	"labnexus/internal/admin"
 	"labnexus/internal/auth"
+	"labnexus/internal/authz"
 	"labnexus/internal/cache"
 	"labnexus/internal/config"
 	"labnexus/internal/database"
@@ -26,34 +27,21 @@ import (
 
 // Build 完成全部装配并返回 gin 路由。
 func Build(cfg *config.Config) (*gin.Engine, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	db, err := database.New(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// 开发期 AutoMigrate;正式部署前切换 goose 版本化迁移(schema 权威定义 docs/schema.sql)
-	if err := db.AutoMigrate(
-		&user.User{}, &user.InviteCode{},
-		&space.Space{}, &space.Folder{},
-		&document.Document{}, &document.DocumentTag{}, &document.Comment{}, &document.Reaction{},
-		&tag.Tag{},
-		&resource.Resource{}, &resource.ResourceTag{},
-		&project.Project{}, &project.ProjectMember{}, &project.Milestone{}, &project.Task{}, &project.TaskLink{},
-		&project.TaskType{},
-		&finance.TurnoverBatch{}, &finance.Participant{}, &finance.TurnoverItem{},
-		&finance.TurnoverSubmission{}, &finance.Account{}, &finance.Transaction{},
-	); err != nil {
-		return nil, err
-	}
-	if err := project.SeedDefaultTaskTypes(context.Background(), db); err != nil {
-		return nil, err
-	}
-	slog.Info("database migrated")
+	slog.Info("database connected")
 
 	// 依赖装配(规范 §3:构造函数注入)
 	store := cache.NewRedisStore(cfg.RedisAddr)
 	users := user.NewGormRepository(db)
 	invites := user.NewGormInviteRepository(db)
+	authorizer := authz.New(users, authz.Options{TestBypass: cfg.AuthzTestBypass})
 	spaces := space.NewGormRepository(db)
 	folders := space.NewGormFolderRepository(db)
 	authSvc := auth.NewService(users, invites, spaces, store, cfg).
@@ -71,6 +59,7 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 		document.NewGormReactionRepository(db),
 		tagRepo, users, spaces, folders,
 	).WithTxRunner(database.GormTxRunner(db)).
+		WithAuthorizer(authorizer).
 		WithSearchProviders(
 			func(ctx context.Context, q string, limit int) ([]*resource.Resource, error) {
 				list, _, err := resource.NewGormRepository(db).List(ctx, resource.ListFilter{
@@ -98,16 +87,18 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 
 	// 阶段 2:F9 项目/任务
 	projectSvc := project.NewService(project.NewGormRepository(db), users).
-		WithTxRunner(database.GormTxRunner(db))
+		WithTxRunner(database.GormTxRunner(db)).
+		WithAuthorizer(authorizer)
 	projectHandler := project.NewHandler(projectSvc)
 
 	// 管理后台(Admin Console):仅 admin;聚合 users/invites + project 任务类型管理
-	adminSvc := admin.NewService(users, invites, projectSvc)
+	adminSvc := admin.NewService(users, invites, projectSvc).WithAuthorizer(authorizer)
 	adminHandler := admin.NewHandler(adminSvc)
 
 	// 阶段 3:F10 经费管理(仅 admin/supervisor)
 	financeSvc := finance.NewService(finance.NewGormRepository(db), users).
 		WithTxRunner(database.GormTxRunner(db)).
+		WithAuthorizer(authorizer).
 		WithPreviewStore(finance.NewCachePreviewStore(store))
 	financeHandler := finance.NewHandler(financeSvc)
 

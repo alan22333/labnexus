@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"labnexus/internal/authz"
 	"labnexus/internal/database"
 	"labnexus/internal/project"
 	"labnexus/internal/resource"
@@ -61,6 +62,7 @@ type Service struct {
 	spaces    space.Repository
 	folders   space.FolderRepository
 	txRunner  database.TxRunner
+	authz     authz.Authorizer
 
 	resourceSearch ResourceSearchFn // 可选:资源搜索(阶段 2)
 	taskSearch     TaskSearchFn     // 可选:任务搜索(阶段 2)
@@ -81,7 +83,14 @@ func NewService(
 		docs: docs, comments: comments, reactions: reactions,
 		tags: tags, users: users, spaces: spaces, folders: folders,
 		txRunner: database.NoopTxRunner(),
+		authz:    authz.New(users, authz.Options{}),
 	}
+}
+
+// WithAuthorizer 注入统一授权器。
+func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
+	s.authz = a
+	return s
 }
 
 // WithTxRunner 注入事务运行器(写操作事务化)。
@@ -164,7 +173,13 @@ func (s *Service) UpdateDocument(ctx context.Context, userID, docID string, req 
 	if err != nil {
 		return nil, ErrDocumentNotFound
 	}
-	if doc.AuthorID != userID {
+	ok, err := s.authz.Can(ctx, userID, authz.ActionManage, authz.Target{
+		Resource: authz.ResourceDocument, OwnerID: doc.AuthorID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrDocumentForbidden
 	}
 
@@ -236,7 +251,13 @@ func (s *Service) DeleteDocument(ctx context.Context, userID, docID string) erro
 	if err != nil {
 		return ErrDocumentNotFound
 	}
-	if doc.AuthorID != userID {
+	ok, err := s.authz.Can(ctx, userID, authz.ActionManage, authz.Target{
+		Resource: authz.ResourceDocument, OwnerID: doc.AuthorID,
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return ErrDocumentForbidden
 	}
 	return s.docs.SoftDelete(ctx, doc.ID)
@@ -266,7 +287,13 @@ func (s *Service) TagContents(ctx context.Context, userID, tagID string) (*TagCo
 	}
 	var visible []*Document
 	for _, d := range docs {
-		if d.Visibility == VisibilityPublic || d.AuthorID == userID {
+		ok, err := s.authz.Can(ctx, userID, authz.ActionRead, authz.Target{
+			Resource: authz.ResourceDocument, OwnerID: d.AuthorID, Visibility: d.Visibility,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			visible = append(visible, d)
 		}
 	}
@@ -328,7 +355,10 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, docID, emoji strin
 }
 
 // ListComments 文档评论列表。
-func (s *Service) ListComments(ctx context.Context, docID string) ([]*CommentView, error) {
+func (s *Service) ListComments(ctx context.Context, userID, docID string) ([]*CommentView, error) {
+	if _, err := s.visibleDoc(ctx, userID, docID); err != nil {
+		return nil, err
+	}
 	comments, err := s.comments.ListByDocument(ctx, docID)
 	if err != nil {
 		return nil, err
@@ -367,7 +397,13 @@ func (s *Service) DeleteComment(ctx context.Context, userID, commentID string) e
 	if err != nil {
 		return ErrCommentNotFound
 	}
-	if comment.AuthorID != userID {
+	ok, err := s.authz.Can(ctx, userID, authz.ActionManage, authz.Target{
+		Resource: authz.ResourceComment, OwnerID: comment.AuthorID,
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return ErrCommentForbidden
 	}
 	return s.comments.Delete(ctx, comment.ID)
@@ -574,7 +610,13 @@ func (s *Service) visibleDoc(ctx context.Context, userID, docID string) (*Docume
 	if err != nil {
 		return nil, ErrDocumentNotFound
 	}
-	if doc.Visibility != VisibilityPublic && doc.AuthorID != userID {
+	ok, err := s.authz.Can(ctx, userID, authz.ActionRead, authz.Target{
+		Resource: authz.ResourceDocument, OwnerID: doc.AuthorID, Visibility: doc.Visibility,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrDocumentNotFound // 他人私有 → 404,不泄露存在
 	}
 	return doc, nil

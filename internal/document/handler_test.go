@@ -79,6 +79,7 @@ func TestDoc_RequiresAuth(t *testing.T) {
 func TestDoc_CreateAndGet(t *testing.T) {
 	r, f := newTestRouter(t)
 	f.ensureUser(userA)
+	f.ensureUser(userB)
 	tg := f.seedTag("组会")
 
 	w := docDo(t, r, http.MethodPost, "/api/me/documents",
@@ -103,6 +104,7 @@ func TestDoc_CreateAndGet(t *testing.T) {
 func TestDoc_PrivateHiddenFromOthers(t *testing.T) {
 	r, f := newTestRouter(t)
 	f.ensureUser(userA)
+	f.ensureUser(userB)
 
 	w := docDo(t, r, http.MethodPost, "/api/me/documents",
 		`{"title":"私密笔记","visibility":"private"}`, authHeader(userA))
