@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 已评审(待实现) |
+| 状态 | 已实现 |
 | 关联 PRD | §4.2 F3 |
 | 关联契约 | api-contract.md §F3 |
 | 涉及表 | documents, document_tags |

@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 已评审(待实现) |
+| 状态 | 已实现 |
 | 关联 PRD | §4.2 F4 |
 | 关联契约 | api-contract.md §F4 |
 | 涉及表 | documents(公开), reactions, comments |

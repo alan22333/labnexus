@@ -35,11 +35,21 @@
 - ✅ **阶段 2 完成**:F7~F9 资源库(link/file + 下载/预览)、项目/任务已实现并通过集成测试(F8 文献元数据已废弃,重做后再引入);
 - ✅ **阶段 3 完成**:F10 经费管理(批次/明细/Excel 导入/上交/资金池,仅 admin+导师)已实现并通过集成测试;
 - ✅ **管理后台后端完成**(Admin Console, 2026-09):成员管理/邀请码管理/任务类型管理,仅 admin 可调
-  (`/api/admin/*`, specs/admin-console.md §4);**前端 `/admin` 页尚未开发,等待正式前端仓库实现**;
+  (`/api/admin/*`, specs/admin-console.md §4);前端 `/admin` 页已由 labnexus-frontend 实现(2026-10-15);
 - ✅ **F9 项目体验优化完成**(v2):任务类型字典、项目进度统计(stats)、加成员候选下拉(契约 §F9);
 - ✅ **前端验证壳完成**:纯 HTML/JS shell、诊断、端到端和 smoke 流程已完成;
-- ▶️ **当前重点**:正式前端(labnexus-frontend)补齐 `/admin` 页与 F9 v2 新字段的对接(由前端协作者 liyan310 负责);
-  产品侧继续从学生/导师视角梳理灵感库新需求(讨论中);后端稳定化路线见 `docs/backend-roadmap.md`;
+- ✅ **权限体系统一为 Casbin**(2026-09-27):`internal/authz` 提供唯一 `Can(actor, action, target)` 决策入口,
+  RBAC 角色继承 + ABAC 目标属性(负责人/项目角色/指派/可见性);保留测试后门 `AUTHZ_TEST_BYPASS=true`
+  (默认关闭,`APP_ENV=production` 时开启将拒绝启动),后门只绕过授权、不绕过 JWT 认证;
+- ✅ **资源删除一致性**(2026-09-27):file 删除采用"隔离 → 删记录 → 清理"流程,数据库删除失败自动恢复原文件;
+  隔离区不对外暴露,消除"数据库已删但上传目录残留孤儿文件"问题;
+- ✅ **版本化数据库迁移 + 备份恢复**(2026-10-15,A2):goose 管理 `migrations/`,基线来自 `docs/schema.sql`;
+  已有 AutoMigrate 库用 `make migrate-baseline` 保留数据标记版本 1;production 不自动迁移;
+  `make backup`/`make restore`(CONFIRM=yes)打包 PostgreSQL dump + `data/uploads/` + SHA-256 校验清单,失败自动回滚上传目录
+  (见 `docs/specs/database-migration-backup.md`);
+- ✅ **正式前端 `/admin` + F9 v2 对接完成**(2026-10-15,labnexus-frontend):管理后台三 tab、邀请码注册链接预填、
+  任务类型下拉/进度统计/成员候选等 F9 v2 字段已接通;
+- ▶️ **当前重点**:产品侧继续从学生/导师视角梳理灵感库新需求(讨论中);后端稳定化路线见 `docs/backend-roadmap.md`;
 - ⏸️ **灵感库暂缓**:除非触发条件满足且经人工确认，否则不进入开发(清单见 product-context §2 / 外部 PRD §4.4)。
 
 ## 铁律(违反即"跑偏",禁止)
@@ -70,13 +80,16 @@ make build     # 编译
 make test      # go test ./... -cover
 make lint      # golangci-lint
 make check     # 提交前全量门禁(vet+fmt+test+lint+build),必须全绿
+make migrate-status|up|down|baseline   # 版本化迁移(goose)
+make backup / make restore FILE=... CONFIRM=yes   # 备份恢复
 ```
 
 ## 环境注意
 
 - **Docker daemon 可能未启动**:`make up` 前先启动 Docker Desktop;
 - **受限沙箱**:`scripts/check.sh` 已自动把 Go/lint 缓存指到工作区(`.gocache` 等),无需手工处理;若换环境(无 `.gocache` 目录),此适配自动不生效;
-- **数据库**:开发期仍使用 GORM AutoMigrate;正式部署前切换 goose,基线 = `docs/schema.sql`;
+- **数据库**:已切换到 goose 版本化迁移(`migrations/`,基线 = `docs/schema.sql`);dev/test 启动自动 baseline/up,
+  production 不自动迁移,部署前显式 `make migrate-up`;已有 AutoMigrate 库用 `make migrate-baseline` 保留数据升级;
 - **git 状态**:尚未 init(若已 init 则跳过),首次提交前 `git init`。
 
 ## 提交规范

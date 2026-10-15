@@ -26,6 +26,9 @@
 | **F7 资源库** | link/file 两种资源、文件上传(扩展名+MIME 双校验,普通 50MB/视频 100MB)、下载/预览(PDF/图片/文本/视频)、标签/描述/类型/关键词筛选 | 本地磁盘存储;论文以 PDF 上传 |
 | **F9 项目任务** | 项目 + 成员管理 + 里程碑 + 任务看板 + **状态机**(todo→in_progress→blocked|done) | 四级权限隔离 |
 | **F10 经费管理** | 周转批次、明细(**手动录入 / Excel 导入**)、上交/补交(自动进资金池)、批次汇总/完成、单账户资金池、参与同学历史账单 | 仅 admin+导师可见;收入+支出=总金额 |
+| **A1 Admin Console**(后端✅ 前端✅) | 成员管理(搜索/改角色/防锁死)、邀请码管理(生成/列表/撤销)、任务类型管理(CRUD/停用/删除) | 仅 admin 可调 `/api/admin/*`;前端 `/admin` 见 labnexus-frontend |
+| **A2 迁移与备份**(✅) | goose 版本化迁移(基线/回滚/状态)、已有库一次基线标记、`make backup`/`make restore`(DB+上传目录+SHA-256 校验) | production 不自动迁移;恢复需 `CONFIRM=yes` |
+| **权限(Casbin)** | 统一 `Can(actor, action, target)`,RBAC 角色继承 + ABAC 目标属性 | 测试后门默认关闭,生产环境禁止开启 |
 | **前端外壳** | 纯 HTML/JS 单页应用,对接全部 API,浏览器直接使用 | 零构建 |
 
 **灵感库**(已记录,暂不开发,按触发条件评估):通知推送、微信机器人、全文搜索升级、导师视图、积分激励等,见 `docs/product-context.md` §2。
@@ -37,7 +40,7 @@
 | 层 | 选型 |
 |---|---|
 | 后端 | **Go 1.25 + Gin + GORM + Postgres 16 + Redis 7**(JWT access + opaque refresh) |
-| 前端 | 阶段 1 验证:**纯 HTML + 原生 JS**(无构建);正式版规划 React + Vite + Tailwind |
+| 前端 | 阶段 1 验证:**纯 HTML + 原生 JS**(无构建);正式版 **React + Vite + Tailwind + shadcn/ui**(独立仓库 labnexus-frontend) |
 | 架构 | **模块化单体 + MVC 轻量分层**(handler → service → repository),不做微服务 |
 | 部署 | 本地 Docker Compose → 0 成本演示(局域网/Cloudflare Tunnel)→ 国内服务器正式 |
 
@@ -64,7 +67,11 @@ curl http://localhost:8080/api/health   # 3. 应返回 {"status":"ok","db":true}
 
 浏览器打开 **http://localhost:8080** 即可使用。
 
-### 生成邀请码(管理端未实现,用 SQL 插入)
+### 生成邀请码
+
+管理后台前后端均已实现:admin 登录正式前端后进入 `/admin` 页生成邀请码(自动或自定义)、
+查看/撤销;后端接口为 `POST/GET/DELETE /api/admin/invites`。
+若临时需要,也可用 SQL 兜底(仅本地演示):
 
 ```bash
 docker exec labnexus-postgres psql -U labnexus -d labnexus -c \
@@ -81,6 +88,40 @@ docker exec labnexus-postgres psql -U labnexus -d labnexus -c \
 | `REDIS_ADDR` | localhost:6380 | 容器映射 6380 |
 | `JWT_SECRET` | dev-secret-change-me | **生产必须覆盖** |
 | `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | 15m / 720h | token 有效期 |
+| `APP_ENV` | development | 运行环境;`production` 时开启测试后门将拒绝启动 |
+| `AUTHZ_TEST_BYPASS` | false | **仅测试用**权限后门;默认关闭,只绕过授权不绕过 JWT 认证 |
+| `MIGRATIONS_DIR` | migrations | SQL 版本化迁移目录 |
+
+---
+
+## 数据库迁移与备份(A2)
+
+迁移使用 **goose**,SQL 文件在 `migrations/`,权威结构仍以 `docs/schema.sql` 为准。
+详细规格与验收清单见 [`docs/specs/database-migration-backup.md`](docs/specs/database-migration-backup.md)。
+
+```bash
+make migrate-status    # 查看各迁移执行状态/当前版本
+make migrate-up        # 应用全部待执行迁移(空库=建全表+内置任务类型)
+make migrate-down      # 回滚最近一个迁移版本
+make migrate-baseline  # 仅对"已由 AutoMigrate 建表、无版本记录"的库标记基线(保留数据)
+```
+
+- development/test 启动 `make run` 时会自动 baseline/up,保持本地便利;
+- **production 不自动迁移**,部署时先显式执行 `make migrate-up`;
+- 已有开发库升级:先 `make migrate-baseline`(标记版本 1,不清数据),其余增量自动补齐。
+
+备份恢复(包含 PostgreSQL custom dump、`data/uploads/` 与 SHA-256 校验清单):
+
+```bash
+make backup                                     # 生成 backups/labnexus-YYYYmmdd-HHMMSS.tar.gz
+make restore FILE=backups/xxx.tar.gz CONFIRM=yes # 校验完整后恢复数据库与上传目录
+```
+
+- 未显式 `CONFIRM=yes` 时 **拒绝执行**;
+- 备份包被改动/缺文件时,恢复在写库前即失败;
+- 数据库恢复失败会自动回滚上传目录,避免只恢复一半;
+- 默认在 Postgres 容器内调用 `pg_dump`/`pg_restore`(避免本机客户端与服务器版本不匹配),
+  也可用 `PG_USE_CONTAINER=never` 强制使用主机工具。
 
 ---
 
@@ -93,6 +134,7 @@ docker exec labnexus-postgres psql -U labnexus -d labnexus -c \
 | **资源库** | 建链接(仅 http/https)、上传文件(支持预览/下载);按类型/关键词筛选 |
 | **项目** | 建项目 → 加成员 → 建里程碑 → 建任务;看板按状态分列,点按钮流转 |
 | **经费**(仅 admin/导师) | 建批次 → 手动/导入明细 → 收款(上交/补交)→ 资金池余额与流水 |
+| **管理后台**(仅 admin) | 正式前端 `/admin`:成员/邀请码/任务类型三个管理 tab |
 | **标签** | 创建标签、查看标签内容页 |
 | **顶栏搜索** | 跨文档/资源/任务三类搜索 |
 
@@ -175,6 +217,8 @@ labnexus/
 │   ├── resource/          # F7 资源库(link/file,下载/预览)
 │   ├── project/           # F9 项目/任务
 │   ├── finance/           # F10 经费管理(批次/明细/上交/资金池)
+│   ├── authz/             # Casbin 统一权限决策(RBAC+ABAC)
+│   ├── admin/             # Admin Console 后端(成员/邀请码/任务类型)
 │   ├── cache/ token/ middleware/ database/ config/   # 基础设施
 ├── web/                   # 前端外壳(纯 HTML/JS,后端托管)
 ├── test/integration/      # 集成测试(build tag: integration)
@@ -184,6 +228,8 @@ labnexus/
 │   ├── schema.sql         # 数据模型权威定义
 │   ├── specs/             # 功能规格(含经费管理/前端)
 │   ├── manual-acceptance.md  # 人工验收指南
+│   ├── evaluations/       # 需求/技术评估记录(灵感库/ES/research-kb)
+│   ├── backend-roadmap.md # 后端稳定化与后续路线
 │   └── product-context.md # 产品上下文(自包含)
 ├── scripts/               # check.sh + 冒烟 ×6 + 前端 diag/e2e
 ├── Makefile               # up/down/run/build/test/test-integration/lint/check
@@ -215,7 +261,9 @@ labnexus/
 | [`docs/schema.sql`](docs/schema.sql) | 数据库权威定义 |
 | [`docs/manual-acceptance.md`](docs/manual-acceptance.md) | 人工验收指南(11 区块) |
 | [`docs/product-context.md`](docs/product-context.md) | 产品定位/功能清单/决策记录 |
-| `docs/specs/` | 12 份功能规格(每功能一份) |
+| `docs/specs/` | 功能规格:F1~F10、Admin Console、前端外壳、Casbin 权限(f8 已废弃归档) |
+| [`docs/backend-roadmap.md`](docs/backend-roadmap.md) | 后端稳定化与后续路线 |
+| [`docs/evaluations/`](docs/evaluations/) | 需求/技术评估记录(灵感库、ES、research-kb 接入) |
 
 ---
 

@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | **已评审(待实现)** |
+| 状态 | **已实现** |
 | 关联 PRD | `../research-group-app/PRD-经费管理.md` v2.0(已确认) |
 | 关联契约 | api-contract.md §F10(经费管理) |
 | 涉及表 | turnover_batches, participants, turnover_items, turnover_submissions, accounts, transactions(新增) |

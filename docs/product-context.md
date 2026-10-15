@@ -46,7 +46,7 @@
 ## 3. 核心设计(理解代码的关键)
 
 1. **统一内容模型(最重要)**:`Document` 是唯一内容实体,`visibility: private/public` 切换 —— **私有 = 笔记,公开 = 帖子**,评论/点赞挂在 Document 上。这是与 Notion+论坛式分离设计最大的区别,也是"文献↔笔记↔帖子↔任务"关联能成立的基础。
-2. **权限单点**:所有权限判断收敛到 `can(user, action, target)` 函数;role 三枚举为 supervisor 差异化权限预留(P2 在函数内加分支)。
+2. **权限单点**:所有权限判断收敛到统一的 `can(user, action, target)` 语义;当前由 `internal/authz` 的 Casbin 实现(RBAC 角色继承 + ABAC 目标属性),领域服务不得自行拼权限分支;测试期后门 `AUTHZ_TEST_BYPASS` 默认关闭且生产环境禁止开启。
 3. **模块化单体 + MVC 轻量分层**:`internal/<domain>/{handler,service,repository}`,依赖方向 handler→service→repository;跨模块调用仅限 service 层;构造函数注入,无全局状态。
 4. **数据模型**:权威定义 `docs/schema.sql`(阶段 1/2/3 表已齐全;`resource_refs`/`weekly_reports` 暂缓)。
 5. **任务状态机**:`todo → in_progress → blocked → todo`、`in_progress → done`;流转校验在 service 层(`TaskService.Transition`)。
@@ -56,7 +56,7 @@
 | # | 决策 | 一句话理由 |
 |---|---|---|
 | D1 | 统一内容模型(笔记=帖子) | 核心差异化 |
-| D2 | 三角色 + `can()` 权限接口 P0 落地 | 导师差异化权限留口 |
+| D2 | 三角色 + 统一 `can(user, action, target)` 权限接口 P0 落地 | 导师差异化权限留口;2026-09-27 起由 Casbin(RBAC+ABAC)承载,接口语义不变 |
 | D3 | 不设访客/只读角色 | 纯内部平台 |
 | D4 | 模块化单体,不做微服务 | 10 人规模,1 人开发 |
 | D5 | P0 = 社区四件套+标签+搜索 | 先让社区活 |
@@ -82,7 +82,9 @@
 | 阶段 0 | 骨架 + 规范 + 契约 + schema | ✅ |
 | 阶段 1 | F1~F6 社区 MVP | ✅ 已完成 |
 | 阶段 2 | F7~F9 资源库 + 任务 | ✅ 已完成 |
-| 阶段 3 | 迭代 + 导师参与 | ⏳ |
+| 阶段 3 | F10 经费管理(批次/明细/Excel 导入/上交/资金池,仅 admin+导师) | ✅ 已完成 |
+| 阶段 3.5 | Admin Console(成员/邀请码/任务类型,仅 admin) | ✅ 后端 + 前端 `/admin`(labnexus-frontend,2026-10-15) |
+| 阶段 4 | 迭代 + 导师参与(灵感库按触发条件捞回) | ⏳ 待启动 |
 
 ## 7. 文档索引
 
@@ -93,4 +95,6 @@
 | `docs/api-contract.md` | API 契约 v0.1(F1~F9 + 管理端) |
 | `docs/schema.sql` | 数据模型权威定义 |
 | `docs/specs/_template.md` | 功能规格模板 |
-| `docs/specs/f1-auth.md` | F1 规格(已评审,待实现) |
+| `docs/specs/` | 功能规格(F1~F10、Admin Console、前端外壳、Casbin 权限;f8 已废弃归档) |
+| `docs/evaluations/` | 需求/技术评估记录(灵感库、ES、research-kb 接入等) |
+| `docs/backend-roadmap.md` | 后端稳定化与后续路线 |

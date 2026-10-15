@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 已评审(待实现) |
+| 状态 | 已实现(含 v2:任务类型字典/进度统计/成员候选) |
 | 关联 PRD | §4.3 F9 |
 | 关联契约 | api-contract.md §F9 |
 | 涉及表 | projects, project_members, milestones, tasks, task_links(新增) |
@@ -93,9 +93,9 @@
 
 ### 8.3 验收标准(可测清单)
 
-- [ ] GET /api/task-types:登录 200 含内置类型;未登录 401
-- [ ] 建任务带合法 type_id:201 且响应含 type 对象;带不存在/非 active type_id → 400
-- [ ] 任务详情/列表含 type 对象(设置了 type_id 时)
-- [ ] 项目列表与详情均含 stats;计数与 DB 一致;过期任务计入 overdue
-- [ ] candidates:owner 200 且不含已有成员/自己;成员、局外人 → 403
-- [ ] 上述全部有集成测试覆盖;`make check` 全绿
+- [x] GET /api/task-types:登录 200 含内置类型;未登录 401
+- [x] 建任务带合法 type_id:201 且响应含 type 对象;带不存在/非 active type_id → 400
+- [x] 任务详情/列表含 type 对象(设置了 type_id 时)
+- [x] 项目列表与详情均含 stats;计数与 DB 一致;过期任务计入 overdue
+- [x] candidates:owner 200 且不含已有成员/自己;成员、局外人 → 403
+- [x] 上述全部有集成测试覆盖;`make check` 全绿(2026-09)

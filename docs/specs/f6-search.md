@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 已评审(待实现) |
+| 状态 | 已实现 |
 | 关联 PRD | §4.2 F6 |
 | 关联契约 | api-contract.md §F6 |
 | 涉及表 | documents(阶段 1);resources/tasks 阶段 2 并入 |
