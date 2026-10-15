@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"labnexus/internal/authz"
 	"labnexus/internal/database"
 	"labnexus/internal/tag"
 	"labnexus/internal/user"
@@ -95,6 +96,7 @@ type Service struct {
 	store    FileStore
 	users    user.Repository
 	txRunner database.TxRunner
+	authz    authz.Authorizer
 }
 
 // NewService 构造函数(依赖注入)。
@@ -107,7 +109,14 @@ func NewService(
 	return &Service{
 		repo: repo, tags: tags, store: store, users: users,
 		txRunner: database.NoopTxRunner(),
+		authz:    authz.New(users, authz.Options{}),
 	}
+}
+
+// WithAuthorizer 注入统一授权器。
+func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
+	s.authz = a
+	return s
 }
 
 // WithTxRunner 注入事务运行器。
@@ -338,14 +347,22 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	if !ok {
 		return ErrResourceForbidden
 	}
+	if res.Type != TypeFile {
+		return s.repo.Delete(ctx, res.ID)
+	}
+
+	quarantinePath, err := s.store.Quarantine(res.FilePath)
+	if err != nil {
+		return fmt.Errorf("quarantine resource file: %w", err)
+	}
 	if err := s.repo.Delete(ctx, res.ID); err != nil {
+		if restoreErr := s.store.Restore(res.FilePath, quarantinePath); restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("restore quarantined resource file: %w", restoreErr))
+		}
 		return err
 	}
-	if res.Type == TypeFile {
-		if err := s.store.Delete(res.FilePath); err != nil {
-			// 记录删除失败日志,不阻塞(数据行已删,文件可能成孤儿,由后续清理脚本处理)
-			return fmt.Errorf("resource deleted but file cleanup failed: %w", err)
-		}
+	if err := s.store.DeleteQuarantined(quarantinePath); err != nil {
+		return fmt.Errorf("resource deleted but quarantined file cleanup failed: %w", err)
 	}
 	return nil
 }
@@ -415,14 +432,9 @@ func (s *Service) validateTags(ctx context.Context, tagIDs []string) error {
 
 // canManage 上传者本人或 admin 可管理。
 func (s *Service) canManage(ctx context.Context, userID string, res *Resource) (bool, error) {
-	if res.UploaderID == userID {
-		return true, nil
-	}
-	u, err := s.users.GetByID(ctx, userID)
-	if err != nil {
-		return false, err
-	}
-	return u.Role == user.RoleAdmin, nil
+	return s.authz.Can(ctx, userID, authz.ActionManage, authz.Target{
+		Resource: authz.ResourceResource, OwnerID: res.UploaderID,
+	})
 }
 
 func (s *Service) buildView(ctx context.Context, res *Resource) (*ResourceView, error) {

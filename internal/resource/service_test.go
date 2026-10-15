@@ -3,6 +3,7 @@ package resource_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -107,8 +108,9 @@ func (r *memTagRepo) ListByResourceIDs(_ context.Context, resourceIDs []string) 
 }
 
 type memResourceRepo struct {
-	byID    map[string]*resource.Resource
-	resTags map[string][]string
+	byID      map[string]*resource.Resource
+	resTags   map[string][]string
+	deleteErr error
 }
 
 func newMemResources() *memResourceRepo {
@@ -134,6 +136,9 @@ func (r *memResourceRepo) Update(_ context.Context, res *resource.Resource) erro
 }
 
 func (r *memResourceRepo) Delete(_ context.Context, id string) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
 	delete(r.byID, id)
 	return nil
 }
@@ -169,10 +174,16 @@ func (r *memResourceRepo) SetTags(_ context.Context, resourceID string, tagIDs [
 }
 
 type memFileStore struct {
-	files map[string]string
+	files          map[string]string
+	quarantined    map[string]string
+	quarantineErr  error
+	restoreErr     error
+	deleteTrashErr error
 }
 
-func newMemFileStore() *memFileStore { return &memFileStore{files: map[string]string{}} }
+func newMemFileStore() *memFileStore {
+	return &memFileStore{files: map[string]string{}, quarantined: map[string]string{}}
+}
 
 func (m *memFileStore) Save(reader io.Reader, filename string) (string, int64, error) {
 	data, err := io.ReadAll(reader)
@@ -194,6 +205,44 @@ func (m *memFileStore) Open(path string) (io.ReadSeekCloser, error) {
 
 func (m *memFileStore) Delete(path string) error {
 	delete(m.files, path)
+	return nil
+}
+
+func (m *memFileStore) Quarantine(path string) (string, error) {
+	if m.quarantineErr != nil {
+		return "", m.quarantineErr
+	}
+	data, ok := m.files[path]
+	if !ok {
+		return "", nil
+	}
+	delete(m.files, path)
+	quarantinePath := ".trash/" + path
+	m.quarantined[quarantinePath] = data
+	return quarantinePath, nil
+}
+
+func (m *memFileStore) Restore(path, quarantinePath string) error {
+	if m.restoreErr != nil {
+		return m.restoreErr
+	}
+	if quarantinePath == "" {
+		return nil
+	}
+	data, ok := m.quarantined[quarantinePath]
+	if !ok {
+		return resource.ErrNotFound
+	}
+	delete(m.quarantined, quarantinePath)
+	m.files[path] = data
+	return nil
+}
+
+func (m *memFileStore) DeleteQuarantined(path string) error {
+	if m.deleteTrashErr != nil {
+		return m.deleteTrashErr
+	}
+	delete(m.quarantined, path)
 	return nil
 }
 
@@ -534,6 +583,47 @@ func TestDelete_LinkNoFile(t *testing.T) {
 	f.seedUser(userA, user.RoleStudent)
 	view, _ := f.svc.CreateLink(context.Background(), userA, resource.CreateLinkRequest{Title: "x", URL: "https://a.com"})
 	require.NoError(t, f.svc.Delete(context.Background(), userA, view.ID))
+}
+
+func TestDelete_QuarantineFailureKeepsRecordAndOriginalFile(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	view, err := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("%PDF-1.4 x"), "", "", nil)
+	require.NoError(t, err)
+	f.files.quarantineErr = errors.New("quarantine failed")
+
+	err = f.svc.Delete(context.Background(), userA, view.ID)
+	require.Error(t, err)
+	assert.Contains(t, f.res.byID, view.ID)
+	assert.Contains(t, f.files.files, view.FilePath)
+}
+
+func TestDelete_DBDeleteFailureRestoresOriginalFile(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	view, err := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("%PDF-1.4 x"), "", "", nil)
+	require.NoError(t, err)
+	f.res.deleteErr = errors.New("db delete failed")
+
+	err = f.svc.Delete(context.Background(), userA, view.ID)
+	require.ErrorIs(t, err, f.res.deleteErr)
+	assert.Contains(t, f.res.byID, view.ID)
+	assert.Contains(t, f.files.files, view.FilePath)
+	assert.Empty(t, f.files.quarantined)
+}
+
+func TestDelete_CleanupFailureLeavesNoOriginalFile(t *testing.T) {
+	f := newFixture(t)
+	f.seedUser(userA, user.RoleStudent)
+	view, err := f.svc.UploadFile(context.Background(), userA, "a.pdf", strings.NewReader("%PDF-1.4 x"), "", "", nil)
+	require.NoError(t, err)
+	f.files.deleteTrashErr = errors.New("cleanup failed")
+
+	err = f.svc.Delete(context.Background(), userA, view.ID)
+	require.Error(t, err)
+	assert.NotContains(t, f.res.byID, view.ID)
+	assert.NotContains(t, f.files.files, view.FilePath)
+	assert.Len(t, f.files.quarantined, 1)
 }
 
 func strPtr(s string) *string { return &s }
