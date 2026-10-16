@@ -2,6 +2,7 @@ package finance_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -233,6 +234,65 @@ func TestFinance_ParticipantsEndpoint(t *testing.T) {
 	w3 := finDo(t, r, http.MethodGet, "/api/finance/participants/"+list.Participants[0].ID+"/bills", "", adminTok)
 	require.Equal(t, http.StatusOK, w3.Code)
 	assert.Contains(t, w3.Body.String(), "2026-08")
+}
+
+func TestFinance_ItemEditDeleteAndVoidEndpoints(t *testing.T) {
+	r, f := newTestRouter(t)
+	f.seedRoles()
+	adminTok := roleHeader(adminID, user.RoleAdmin)
+	ctx := context.Background()
+
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 250000,
+	})
+
+	// PATCH 改金额(无上交)
+	w := finDo(t, r, http.MethodPatch, "/api/finance/items/"+item.ID,
+		`{"payroll_amount":300000,"tip_amount":20000}`, adminTok)
+	require.Equal(t, http.StatusOK, w.Code, "%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), `"should_return":280000`)
+
+	// 上交后金额锁定 → 400
+	_, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+	w2 := finDo(t, r, http.MethodPatch, "/api/finance/items/"+item.ID, `{"payroll_amount":1000}`, adminTok)
+	assert.Equal(t, http.StatusBadRequest, w2.Code)
+
+	// 撤销上交
+	subID := mustSub(t, f, item.ID)
+	w3 := finDo(t, r, http.MethodPost, "/api/finance/submissions/"+subID+"/void", "", adminTok)
+	require.Equal(t, http.StatusOK, w3.Code, "%s", w3.Body.String())
+	assert.Contains(t, w3.Body.String(), `"returned":0`)
+
+	// 撤销不存在的上交 → 404
+	w4 := finDo(t, r, http.MethodPost, "/api/finance/submissions/no-such/void", "", adminTok)
+	assert.Equal(t, http.StatusNotFound, w4.Code)
+
+	// DELETE 明细(此时无上交)
+	w5 := finDo(t, r, http.MethodDelete, "/api/finance/items/"+item.ID, "", adminTok)
+	assert.Equal(t, http.StatusNoContent, w5.Code)
+
+	// 再删 → 404
+	w6 := finDo(t, r, http.MethodDelete, "/api/finance/items/"+item.ID, "", adminTok)
+	assert.Equal(t, http.StatusNotFound, w6.Code)
+}
+
+func TestFinance_DeleteBatchBlockedEndpoint(t *testing.T) {
+	r, f := newTestRouter(t)
+	f.seedRoles()
+	adminTok := roleHeader(adminID, user.RoleAdmin)
+	ctx := context.Background()
+
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 100000,
+	})
+	_, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+
+	w := finDo(t, r, http.MethodDelete, "/api/finance/batches/"+batchID, "", adminTok)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 var _ = fmt.Sprintf

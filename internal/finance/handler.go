@@ -31,10 +31,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed.DELETE("/finance/batches/:id", h.DeleteBatch)
 	authed.POST("/finance/batches/:id/complete", h.CompleteBatch)
 	authed.POST("/finance/batches/:id/items", h.CreateItem)
+	authed.PATCH("/finance/items/:id", h.UpdateItem)
+	authed.DELETE("/finance/items/:id", h.DeleteItem)
 	authed.GET("/finance/import-template", h.ImportTemplate)
 	authed.POST("/finance/batches/:id/items/import-preview", h.ImportPreview)
 	authed.POST("/finance/imports/:preview_id/confirm", h.ConfirmImport)
 	authed.POST("/finance/items/:id/submit", h.Submit)
+	authed.POST("/finance/submissions/:id/void", h.VoidSubmission)
 	authed.GET("/finance/ledger", h.Ledger)
 	authed.POST("/finance/ledger/income", h.AddIncome)
 	authed.POST("/finance/ledger/expense", h.AddExpense)
@@ -113,6 +116,30 @@ func (h *Handler) CreateItem(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"item": view})
 }
 
+// UpdateItem 明细纠错(PATCH)。
+func (h *Handler) UpdateItem(c *gin.Context) {
+	var req UpdateItemRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "VALIDATION", "invalid request body")
+		return
+	}
+	view, err := h.svc.UpdateItem(c.Request.Context(), h.userID(c), c.Param("id"), req)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"item": view})
+}
+
+// DeleteItem 删除明细(仅 active 且无上交)。
+func (h *Handler) DeleteItem(c *gin.Context) {
+	if err := h.svc.DeleteItem(c.Request.Context(), h.userID(c), c.Param("id")); err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // ImportTemplate 下载导入模板 xlsx。
 func (h *Handler) ImportTemplate(c *gin.Context) {
 	data, err := h.svc.ImportTemplate(c.Request.Context(), h.userID(c))
@@ -188,6 +215,16 @@ func (h *Handler) Submit(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"submission": sub})
 }
 
+// VoidSubmission 撤销上交。
+func (h *Handler) VoidSubmission(c *gin.Context) {
+	view, err := h.svc.VoidSubmission(c.Request.Context(), h.userID(c), c.Param("id"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"item": view})
+}
+
 // ---- 资金池 ----
 
 func (h *Handler) Ledger(c *gin.Context) {
@@ -252,7 +289,8 @@ func (h *Handler) ParticipantBills(c *gin.Context) {
 func respondServiceError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrBatchNotFound), errors.Is(err, ErrItemNotFound),
-		errors.Is(err, ErrParticipantNotFound), errors.Is(err, ErrPreviewNotFound):
+		errors.Is(err, ErrParticipantNotFound), errors.Is(err, ErrPreviewNotFound),
+		errors.Is(err, ErrSubmissionNotFound):
 		respondError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, ErrForbidden), errors.Is(err, user.ErrNotFound):
 		respondError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
@@ -260,6 +298,7 @@ func respondServiceError(c *gin.Context, err error) {
 		errors.Is(err, ErrInvalidDate), errors.Is(err, ErrInvalidAmount),
 		errors.Is(err, ErrOverSubmit), errors.Is(err, ErrBatchDone),
 		errors.Is(err, ErrBatchNotDone), errors.Is(err, ErrCannotDelete),
+		errors.Is(err, ErrItemHasReturned),
 		errors.Is(err, ErrInvalidExcel), errors.Is(err, ErrTooManyRows):
 		respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())
 	default:

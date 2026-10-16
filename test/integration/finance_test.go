@@ -38,7 +38,7 @@ func TestFinance_FullFlow(t *testing.T) {
 	}
 	parseJSON(t, wBatch, &batch)
 
-	// 3. 手动加明细(应交自动 = 应发−扣税−辛苦费)
+	// 3. 手动加明细(应交自动 = 应发−辛苦费;扣税仅登记不减)
 	wItem := doJSON(t, r, http.MethodPost, "/api/finance/batches/"+batch.Batch.ID+"/items",
 		`{"name":"张同学","student_no":"2023001","date":"2026-08-20","payroll_amount":250000,"tip_amount":10000}`, tokenA)
 	require.Equal(t, http.StatusCreated, wItem.Code, "%s", wItem.Body.String())
@@ -196,6 +196,76 @@ func TestFinance_PermissionAndBoundaries(t *testing.T) {
 	wBad := doJSON(t, r, http.MethodPost, "/api/finance/ledger/income",
 		`{"amount":-1,"date":"2026-10-03"}`, tokenA)
 	assert.Equal(t, http.StatusBadRequest, wBad.Code)
+}
+
+// v2 纠错链路:改数 → 上交 → 金额锁定 → 撤销上交 → 删批次拦截 → 撤销后删除
+func TestFinance_CorrectionFlow(t *testing.T) {
+	r := setupServer(t)
+	tokenA := registerUser(t, r, "finance_fix", "纠错员")
+	db := connectDB(t)
+	require.NoError(t, db.Exec("UPDATE users SET role = 'admin' WHERE username = 'finance_fix'").Error)
+	closeDB(db)
+
+	wBatch := doJSON(t, r, http.MethodPost, "/api/finance/batches", `{"name":"2026-11"}`, tokenA)
+	var batch struct {
+		Batch struct {
+			ID string `json:"id"`
+		} `json:"batch"`
+	}
+	parseJSON(t, wBatch, &batch)
+	batchID := batch.Batch.ID
+
+	wItem := doJSON(t, r, http.MethodPost, "/api/finance/batches/"+batchID+"/items",
+		`{"name":"赵同学","student_no":"4","date":"2026-11-01","payroll_amount":250000,"tip_amount":10000}`, tokenA)
+	require.Equal(t, http.StatusCreated, wItem.Code, "%s", wItem.Body.String())
+	var item struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	parseJSON(t, wItem, &item)
+	itemID := item.Item.ID
+
+	// PATCH 改应发 → 应交重算
+	wPatch := doJSON(t, r, http.MethodPatch, "/api/finance/items/"+itemID,
+		`{"payroll_amount":300000}`, tokenA)
+	require.Equal(t, http.StatusOK, wPatch.Code, "%s", wPatch.Body.String())
+	assert.Contains(t, wPatch.Body.String(), `"should_return":290000`)
+
+	// 上交
+	wSub := doJSON(t, r, http.MethodPost, "/api/finance/items/"+itemID+"/submit",
+		`{"amount":290000,"date":"2026-11-02"}`, tokenA)
+	require.Equal(t, http.StatusCreated, wSub.Code, "%s", wSub.Body.String())
+	var sub struct {
+		Submission struct {
+			ID string `json:"id"`
+		} `json:"submission"`
+	}
+	parseJSON(t, wSub, &sub)
+
+	// 有上交 → 改金额 400、删明细 400、删批次 400
+	assert.Equal(t, http.StatusBadRequest,
+		doJSON(t, r, http.MethodPatch, "/api/finance/items/"+itemID, `{"payroll_amount":1}`, tokenA).Code)
+	assert.Equal(t, http.StatusBadRequest,
+		doJSON(t, r, http.MethodDelete, "/api/finance/items/"+itemID, "", tokenA).Code)
+	assert.Equal(t, http.StatusBadRequest,
+		doJSON(t, r, http.MethodDelete, "/api/finance/batches/"+batchID, "", tokenA).Code)
+
+	// 明细详情可见上交记录
+	wDetail := doJSON(t, r, http.MethodGet, "/api/finance/batches/"+batchID, "", tokenA)
+	assert.Contains(t, wDetail.Body.String(), `"submissions"`)
+
+	// 撤销上交 → 余额回 0
+	wVoid := doJSON(t, r, http.MethodPost, "/api/finance/submissions/"+sub.Submission.ID+"/void", "", tokenA)
+	require.Equal(t, http.StatusOK, wVoid.Code, "%s", wVoid.Body.String())
+	assert.Contains(t, wVoid.Body.String(), `"returned":0`)
+	wLedger := doJSON(t, r, http.MethodGet, "/api/finance/ledger", "", tokenA)
+	assert.Contains(t, wLedger.Body.String(), `"balance":0`)
+	assert.Contains(t, wLedger.Body.String(), `"turnover_void"`)
+
+	// 撤销后可删批次
+	wDel := doJSON(t, r, http.MethodDelete, "/api/finance/batches/"+batchID, "", tokenA)
+	assert.Equal(t, http.StatusNoContent, wDel.Code)
 }
 
 var _ = fmt.Sprintf

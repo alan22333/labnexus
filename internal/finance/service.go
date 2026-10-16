@@ -38,6 +38,8 @@ var (
 	ErrInvalidExcel        = errors.New("invalid excel file")
 	ErrTooManyRows         = errors.New("excel rows exceed limit")
 	ErrAccountNotFound     = errors.New("account not found")
+	ErrSubmissionNotFound  = errors.New("submission not found")
+	ErrItemHasReturned     = errors.New("item already has submissions; void them before editing amounts")
 )
 
 // 常量
@@ -48,8 +50,9 @@ const (
 
 // ImportPreviewStore 导入预览存储(测试可注入内存实现)。
 type ImportPreviewStore interface {
-	SetPreview(ctx context.Context, id string, rows []ImportRow, ttl time.Duration) error
-	GetPreview(ctx context.Context, id string) ([]ImportRow, error)
+	SetPreview(ctx context.Context, id string, preview ImportPreview, ttl time.Duration) error
+	GetPreview(ctx context.Context, id string) (ImportPreview, error)
+	DelPreview(ctx context.Context, id string) error
 }
 
 // Service 经费业务逻辑
@@ -174,7 +177,7 @@ type CreateItemRequest struct {
 	PayrollAmount int64  `json:"payroll_amount"`
 	TaxAmount     int64  `json:"tax_amount"`
 	TipAmount     int64  `json:"tip_amount"`
-	ShouldReturn  int64  `json:"should_return"` // 0 = 自动按公式
+	ShouldReturn  *int64 `json:"should_return"` // nil = 自动按公式;显式 0 表示应交为 0
 	Note          string `json:"note"`
 }
 
@@ -182,6 +185,16 @@ type SubmitRequest struct {
 	Amount int64  `json:"amount"`
 	Date   string `json:"date"`
 	Note   string `json:"note"`
+}
+
+// UpdateItemRequest 明细纠错(PATCH):指针字段区分"未提供"与"显式 0"。
+type UpdateItemRequest struct {
+	Date          *string `json:"date"`
+	PayrollAmount *int64  `json:"payroll_amount"`
+	TaxAmount     *int64  `json:"tax_amount"`
+	TipAmount     *int64  `json:"tip_amount"`
+	ShouldReturn  *int64  `json:"should_return"`
+	Note          *string `json:"note"`
 }
 
 type LedgerRequest struct {
@@ -294,6 +307,14 @@ func (s *Service) DeleteBatch(ctx context.Context, userID, batchID string) error
 	if b.Status == BatchStatusDone {
 		return ErrCannotDelete
 	}
+	// 有上交记录(资金池已有对应流水)→ 不可删,避免留下孤儿收入流水;先逐条撤销。
+	n, err := s.repo.CountSubmissionsByBatch(ctx, batchID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrCannotDelete
+	}
 	return s.repo.DeleteBatch(ctx, batchID)
 }
 
@@ -336,6 +357,99 @@ func (s *Service) CreateItem(ctx context.Context, userID, batchID string, req Cr
 	return s.buildItemView(ctx, item)
 }
 
+// UpdateItem 明细纠错(PATCH)。批次 done → 400;已有上交(returned>0)时金额类字段锁定。
+func (s *Service) UpdateItem(ctx context.Context, userID, itemID string, req UpdateItemRequest) (*ItemView, error) {
+	if err := s.requireFinance(ctx, userID); err != nil {
+		return nil, err
+	}
+	item, err := s.repo.GetItem(ctx, itemID)
+	if err != nil {
+		return nil, ErrItemNotFound
+	}
+	b, err := s.repo.GetBatch(ctx, item.BatchID)
+	if err != nil {
+		return nil, ErrBatchNotFound
+	}
+	if b.Status == BatchStatusDone {
+		return nil, ErrBatchDone
+	}
+	moneyChanged := req.PayrollAmount != nil || req.TaxAmount != nil ||
+		req.TipAmount != nil || req.ShouldReturn != nil
+	if moneyChanged && item.Returned > 0 {
+		return nil, ErrItemHasReturned
+	}
+
+	if req.Date != nil {
+		norm, err := normalizeDate(*req.Date)
+		if err != nil {
+			return nil, ErrInvalidDate
+		}
+		item.Date = parseDate(norm)
+	}
+	if req.PayrollAmount != nil {
+		if *req.PayrollAmount <= 0 {
+			return nil, ErrItemFields
+		}
+		item.PayrollAmount = *req.PayrollAmount
+	}
+	if req.TaxAmount != nil {
+		if *req.TaxAmount < 0 {
+			return nil, ErrInvalidAmount
+		}
+		item.TaxAmount = *req.TaxAmount
+	}
+	if req.TipAmount != nil {
+		if *req.TipAmount < 0 {
+			return nil, ErrInvalidAmount
+		}
+		item.TipAmount = *req.TipAmount
+	}
+	if req.Note != nil {
+		item.Note = *req.Note
+	}
+	switch {
+	case req.ShouldReturn != nil:
+		// 显式给出则采用(允许 0)
+		if *req.ShouldReturn < 0 {
+			return nil, ErrInvalidAmount
+		}
+		item.ShouldReturn = *req.ShouldReturn
+	case req.PayrollAmount != nil || req.TipAmount != nil:
+		// 未显式给出应交,且改动了应发/辛苦费 → 按公式重算
+		item.ShouldReturn = item.PayrollAmount - item.TipAmount
+	}
+	if item.ShouldReturn < 0 {
+		return nil, ErrInvalidAmount
+	}
+	item.UpdatedAt = s.now()
+	if err := s.repo.UpdateItem(ctx, item); err != nil {
+		return nil, err
+	}
+	return s.buildItemView(ctx, item)
+}
+
+// DeleteItem 删除明细。仅 active 批次且该明细无上交(returned==0)可删。
+func (s *Service) DeleteItem(ctx context.Context, userID, itemID string) error {
+	if err := s.requireFinance(ctx, userID); err != nil {
+		return err
+	}
+	item, err := s.repo.GetItem(ctx, itemID)
+	if err != nil {
+		return ErrItemNotFound
+	}
+	b, err := s.repo.GetBatch(ctx, item.BatchID)
+	if err != nil {
+		return ErrBatchNotFound
+	}
+	if b.Status == BatchStatusDone {
+		return ErrBatchDone
+	}
+	if item.Returned > 0 {
+		return ErrItemHasReturned
+	}
+	return s.repo.DeleteItem(ctx, itemID)
+}
+
 // ImportPreview 解析 xlsx 生成导入预览。
 func (s *Service) ImportPreview(ctx context.Context, userID, batchID string, file io.Reader) (string, []ImportRow, []string, error) {
 	if err := s.requireFinance(ctx, userID); err != nil {
@@ -368,7 +482,11 @@ func (s *Service) ImportPreview(ctx context.Context, userID, batchID string, fil
 		return strings.TrimSpace(row[idx])
 	}
 
-	var valid []ImportRow
+	type parsedRow struct {
+		line int
+		row  ImportRow
+	}
+	var cands []parsedRow
 	var errs []string
 	for i := 1; i < len(rows); i++ {
 		if i > MaxImportRows {
@@ -401,8 +519,30 @@ func (s *Service) ImportPreview(ctx context.Context, userID, batchID string, fil
 				errs = append(errs, line+":日期格式错误")
 			} else {
 				r.Date = normDate
-				valid = append(valid, r)
+				cands = append(cands, parsedRow{line: i + 1, row: r})
 			}
+		}
+	}
+
+	// 查重 A:文件内同(姓名+学号)只保留首行,其余标记重复。
+	seenInFile := map[string]bool{}
+	// 查重 B:该批次已存在同(姓名+学号)的明细。
+	inBatch, err := s.batchParticipantKeys(ctx, batchID)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	var valid []ImportRow
+	for _, c := range cands {
+		key := c.row.Name + "|" + c.row.StudentNo
+		line := "第" + strconv.Itoa(c.line) + "行"
+		switch {
+		case seenInFile[key]:
+			errs = append(errs, line+":姓名+学号在本次文件中重复")
+		case inBatch[key]:
+			errs = append(errs, line+":该批次已存在同 姓名+学号 的明细")
+		default:
+			seenInFile[key] = true
+			valid = append(valid, c.row)
 		}
 	}
 
@@ -410,13 +550,30 @@ func (s *Service) ImportPreview(ctx context.Context, userID, batchID string, fil
 		return "", nil, nil, ErrPreviewNotFound
 	}
 	previewID := newID()
-	if err := s.previews.SetPreview(ctx, previewID, valid, previewTTL); err != nil {
+	if err := s.previews.SetPreview(ctx, previewID, ImportPreview{Rows: valid, Skipped: len(errs)}, previewTTL); err != nil {
 		return "", nil, nil, err
 	}
 	return previewID, valid, errs, nil
 }
 
-// ConfirmImport 确认导入(按 preview_id 批量生成明细,同事务)。
+// batchParticipantKeys 返回批次内已存在明细的 (姓名+学号) 集合,用于导入查重。
+func (s *Service) batchParticipantKeys(ctx context.Context, batchID string) (map[string]bool, error) {
+	items, err := s.repo.ListItems(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	keys := make(map[string]bool, len(items))
+	for _, it := range items {
+		p, err := s.repo.GetParticipantByID(ctx, it.ParticipantID)
+		if err != nil {
+			return nil, err
+		}
+		keys[p.Name+"|"+p.StudentNo] = true
+	}
+	return keys, nil
+}
+
+// ConfirmImport 确认导入(按 preview_id 批量生成明细,同事务);预览确认后即失效(消费式)。
 func (s *Service) ConfirmImport(ctx context.Context, userID, previewID, batchID string) (int, int, error) {
 	if err := s.requireFinance(ctx, userID); err != nil {
 		return 0, 0, err
@@ -424,7 +581,7 @@ func (s *Service) ConfirmImport(ctx context.Context, userID, previewID, batchID 
 	if s.previews == nil {
 		return 0, 0, ErrPreviewNotFound
 	}
-	rows, err := s.previews.GetPreview(ctx, previewID)
+	preview, err := s.previews.GetPreview(ctx, previewID)
 	if err != nil {
 		return 0, 0, ErrPreviewNotFound
 	}
@@ -437,12 +594,12 @@ func (s *Service) ConfirmImport(ctx context.Context, userID, previewID, batchID 
 	}
 	imported := 0
 	err = s.txRunner(ctx, func(tctx context.Context) error {
-		for _, r := range rows {
+		for _, r := range preview.Rows {
 			p, err := s.getOrCreateParticipant(tctx, r.Name, r.StudentNo, "")
 			if err != nil {
 				return err
 			}
-			item := NewItem(batchID, p.ID, r.Date, r.PayrollAmount, r.TaxAmount, r.TipAmount, 0, r.Note, userID)
+			item := NewItem(batchID, p.ID, r.Date, r.PayrollAmount, r.TaxAmount, r.TipAmount, nil, r.Note, userID)
 			if err := s.repo.CreateItem(tctx, item); err != nil {
 				return err
 			}
@@ -453,7 +610,9 @@ func (s *Service) ConfirmImport(ctx context.Context, userID, previewID, batchID 
 	if err != nil {
 		return 0, 0, err
 	}
-	return imported, len(rows) - imported, nil
+	// 消费式失效:确认成功后删除预览,重复确认 → 404。
+	_ = s.previews.DelPreview(ctx, previewID)
+	return imported, preview.Skipped, nil
 }
 
 // ---- 上交 ----
@@ -488,8 +647,8 @@ func (s *Service) Submit(ctx context.Context, userID, itemID string, req SubmitR
 
 	var sub *TurnoverSubmission
 	err = s.txRunner(ctx, func(tctx context.Context) error {
-		// 事务内重读,防并发超扣
-		cur, err := s.repo.GetItem(tctx, itemID)
+		// 事务内加行锁重读(SELECT ... FOR UPDATE),真正防并发超扣
+		cur, err := s.repo.GetItemForUpdate(tctx, itemID)
 		if err != nil {
 			return ErrItemNotFound
 		}
@@ -518,6 +677,67 @@ func (s *Service) Submit(ctx context.Context, userID, itemID string, req SubmitR
 	return sub, nil
 }
 
+// VoidSubmission 撤销一条上交:删记录 + 回退 item.returned + 记一笔冲正支出流水(同事务)。
+// 不物理删除原收入流水,保留审计;余额 = Σ收−Σ支,冲正后净 0。
+func (s *Service) VoidSubmission(ctx context.Context, userID, submissionID string) (*ItemView, error) {
+	if err := s.requireFinance(ctx, userID); err != nil {
+		return nil, err
+	}
+	sub, err := s.repo.GetSubmission(ctx, submissionID)
+	if err != nil {
+		return nil, ErrSubmissionNotFound
+	}
+	item, err := s.repo.GetItem(ctx, sub.ItemID)
+	if err != nil {
+		return nil, ErrItemNotFound
+	}
+	b, err := s.repo.GetBatch(ctx, item.BatchID)
+	if err != nil {
+		return nil, ErrBatchNotFound
+	}
+	if b.Status == BatchStatusDone {
+		return nil, ErrBatchDone
+	}
+
+	var updated *TurnoverItem
+	err = s.txRunner(ctx, func(tctx context.Context) error {
+		cur, err := s.repo.GetItemForUpdate(tctx, sub.ItemID)
+		if err != nil {
+			return ErrItemNotFound
+		}
+		if cur.Returned < sub.Amount {
+			return ErrInvalidAmount
+		}
+		cur.Returned -= sub.Amount
+		cur.UpdatedAt = s.now()
+		if err := s.repo.UpdateItem(tctx, cur); err != nil {
+			return err
+		}
+		// 幂等性:再次撤销同一记录时 GetSubmission 已 404,这里再删一次也无副作用。
+		if err := s.repo.DeleteSubmission(tctx, submissionID); err != nil {
+			return err
+		}
+		acc, err := s.repo.EnsureDefaultAccount(tctx)
+		if err != nil {
+			return err
+		}
+		note := "撤销上交冲正"
+		if sub.Note != "" {
+			note = "撤销上交冲正:" + sub.Note
+		}
+		tx := NewTransaction(acc.ID, TxExpense, sub.Amount, CategoryTurnoverVoid, "turnover_item", sub.ItemID, note, s.now(), userID)
+		if err := s.repo.CreateTransaction(tctx, tx); err != nil {
+			return err
+		}
+		updated = cur
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.buildItemView(ctx, updated)
+}
+
 // ---- 资金池 ----
 
 // Ledger 资金池余额 + 流水。
@@ -542,7 +762,7 @@ func (s *Service) Ledger(ctx context.Context, userID string) (int64, []*Transact
 
 // AddIncome 导师补充(收入)。
 func (s *Service) AddIncome(ctx context.Context, userID string, req LedgerRequest) (*TransactionView, error) {
-	return s.addLedgerTx(ctx, userID, TxIncome, CategoryOther, req)
+	return s.addLedgerTx(ctx, userID, TxIncome, CategorySupplement, req)
 }
 
 // AddExpense 资金支出。
@@ -786,7 +1006,7 @@ func validateItemRequest(req CreateItemRequest) error {
 	if req.TaxAmount < 0 || req.TipAmount < 0 {
 		return ErrInvalidAmount
 	}
-	if req.ShouldReturn < 0 {
+	if req.ShouldReturn != nil && *req.ShouldReturn < 0 {
 		return ErrInvalidAmount
 	}
 	return nil

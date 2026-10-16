@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"labnexus/internal/database"
 )
@@ -100,9 +101,11 @@ const (
 	TxIncome  = "income"
 	TxExpense = "expense"
 
-	CategoryTurnover = "turnover" // 上交回笼
-	CategoryLabor    = "labor"    // 劳务发放(支出)
-	CategoryOther    = "other"    // 其他
+	CategoryTurnover     = "turnover"      // 上交回笼(收入)
+	CategorySupplement   = "supplement"    // 导师补充(收入)
+	CategoryLabor        = "labor"         // 劳务发放(支出)
+	CategoryTurnoverVoid = "turnover_void" // 撤销上交冲正(支出)
+	CategoryOther        = "other"         // 其他
 )
 
 // TurnoverBatch 周转批次(schema.sql: turnover_batches)
@@ -160,15 +163,17 @@ type TurnoverItem struct {
 }
 
 // NewItem 构造明细(应交默认 = 应发−辛苦费,扣税不减仅记录;可覆盖)。
-func NewItem(batchID, participantID, date string, payroll, tax, tip, shouldReturn int64, note, createdBy string) *TurnoverItem {
-	if shouldReturn <= 0 {
-		shouldReturn = payroll - tip
+// shouldReturn 为 nil 时按公式自动计算;非 nil 时采用给定值(允许显式 0)。
+func NewItem(batchID, participantID, date string, payroll, tax, tip int64, shouldReturn *int64, note, createdBy string) *TurnoverItem {
+	sr := payroll - tip
+	if shouldReturn != nil {
+		sr = *shouldReturn
 	}
 	now := time.Now()
 	return &TurnoverItem{
 		ID: uuid.NewString(), BatchID: batchID, ParticipantID: participantID,
 		Date: parseDate(date), PayrollAmount: payroll, TaxAmount: tax, TipAmount: tip,
-		ShouldReturn: shouldReturn, Note: note, CreatedBy: createdBy,
+		ShouldReturn: sr, Note: note, CreatedBy: createdBy,
 		CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -184,10 +189,10 @@ func (i *TurnoverItem) Unreturned() int64 {
 // Status 明细状态(由 returned 推导)。
 func (i *TurnoverItem) Status() string {
 	switch {
+	case i.Returned >= i.ShouldReturn:
+		return ItemStatusDone // 含应交为 0(无需上交)的情况
 	case i.Returned <= 0:
 		return ItemStatusPending
-	case i.Returned >= i.ShouldReturn:
-		return ItemStatusDone
 	default:
 		return ItemStatusPartial
 	}
@@ -275,15 +280,21 @@ type Repository interface {
 	// 明细
 	CreateItem(ctx context.Context, it *TurnoverItem) error
 	GetItem(ctx context.Context, id string) (*TurnoverItem, error)
+	// GetItemForUpdate 取明细并加行锁(SELECT ... FOR UPDATE,须在事务内调用)。
+	GetItemForUpdate(ctx context.Context, id string) (*TurnoverItem, error)
 	UpdateItem(ctx context.Context, it *TurnoverItem) error
+	DeleteItem(ctx context.Context, id string) error
 	DeleteItemsByBatch(ctx context.Context, batchID string) error
 	ListItems(ctx context.Context, batchID string) ([]*TurnoverItem, error)
 	ListItemsByParticipant(ctx context.Context, participantID string) ([]*TurnoverItem, error)
 
 	// 上交
 	CreateSubmission(ctx context.Context, s *TurnoverSubmission) error
+	GetSubmission(ctx context.Context, id string) (*TurnoverSubmission, error)
 	ListSubmissionsByItem(ctx context.Context, itemID string) ([]*TurnoverSubmission, error)
+	DeleteSubmission(ctx context.Context, id string) error
 	DeleteSubmissionsByItem(ctx context.Context, itemID string) error
+	CountSubmissionsByBatch(ctx context.Context, batchID string) (int64, error)
 
 	// 资金池
 	EnsureDefaultAccount(ctx context.Context) (*Account, error)
@@ -322,21 +333,22 @@ func (r *GormRepository) UpdateBatch(ctx context.Context, b *TurnoverBatch) erro
 }
 
 func (r *GormRepository) DeleteBatch(ctx context.Context, id string) error {
-	// 级联:删除明细与上交记录(participant 保留)
-	db := database.TxFromContext(ctx, r.db).WithContext(ctx)
-	var itemIDs []string
-	if err := db.Model(&TurnoverItem{}).Where("batch_id = ?", id).Pluck("id", &itemIDs).Error; err != nil {
-		return err
-	}
-	if len(itemIDs) > 0 {
-		if err := db.Where("item_id IN ?", itemIDs).Delete(&TurnoverSubmission{}).Error; err != nil {
+	// 级联:删除明细与上交记录(participant 保留);整体一个事务,避免半删留孤儿。
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var itemIDs []string
+		if err := tx.Model(&TurnoverItem{}).Where("batch_id = ?", id).Pluck("id", &itemIDs).Error; err != nil {
 			return err
 		}
-		if err := db.Where("batch_id = ?", id).Delete(&TurnoverItem{}).Error; err != nil {
-			return err
+		if len(itemIDs) > 0 {
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&TurnoverSubmission{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("batch_id = ?", id).Delete(&TurnoverItem{}).Error; err != nil {
+				return err
+			}
 		}
-	}
-	return db.Delete(&TurnoverBatch{}, "id = ?", id).Error
+		return tx.Delete(&TurnoverBatch{}, "id = ?", id).Error
+	})
 }
 
 func (r *GormRepository) ListBatches(ctx context.Context) ([]*TurnoverBatch, error) {
@@ -398,8 +410,26 @@ func (r *GormRepository) GetItem(ctx context.Context, id string) (*TurnoverItem,
 	return &it, nil
 }
 
+func (r *GormRepository) GetItemForUpdate(ctx context.Context, id string) (*TurnoverItem, error) {
+	var it TurnoverItem
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).First(&it, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
 func (r *GormRepository) UpdateItem(ctx context.Context, it *TurnoverItem) error {
 	return database.TxFromContext(ctx, r.db).WithContext(ctx).Save(it).Error
+}
+
+func (r *GormRepository) DeleteItem(ctx context.Context, id string) error {
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Delete(&TurnoverItem{}, "id = ?", id).Error
 }
 
 func (r *GormRepository) DeleteItemsByBatch(ctx context.Context, batchID string) error {
@@ -423,6 +453,33 @@ func (r *GormRepository) ListItemsByParticipant(ctx context.Context, participant
 
 func (r *GormRepository) CreateSubmission(ctx context.Context, s *TurnoverSubmission) error {
 	return database.TxFromContext(ctx, r.db).WithContext(ctx).Create(s).Error
+}
+
+func (r *GormRepository) GetSubmission(ctx context.Context, id string) (*TurnoverSubmission, error) {
+	var s TurnoverSubmission
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).First(&s, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (r *GormRepository) DeleteSubmission(ctx context.Context, id string) error {
+	return database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Delete(&TurnoverSubmission{}, "id = ?", id).Error
+}
+
+func (r *GormRepository) CountSubmissionsByBatch(ctx context.Context, batchID string) (int64, error) {
+	var n int64
+	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
+		Model(&TurnoverSubmission{}).
+		Joins("JOIN turnover_items ON turnover_items.id = turnover_submissions.item_id").
+		Where("turnover_items.batch_id = ?", batchID).
+		Count(&n).Error
+	return n, err
 }
 
 func (r *GormRepository) ListSubmissionsByItem(ctx context.Context, itemID string) ([]*TurnoverSubmission, error) {

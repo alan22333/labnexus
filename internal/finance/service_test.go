@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -164,8 +165,19 @@ func (r *memRepo) GetItem(_ context.Context, id string) (*finance.TurnoverItem, 
 	}
 	return it, nil
 }
+func (r *memRepo) GetItemForUpdate(_ context.Context, id string) (*finance.TurnoverItem, error) {
+	it, ok := r.items[id]
+	if !ok {
+		return nil, finance.ErrNotFound
+	}
+	return it, nil
+}
 func (r *memRepo) UpdateItem(_ context.Context, it *finance.TurnoverItem) error {
 	r.items[it.ID] = it
+	return nil
+}
+func (r *memRepo) DeleteItem(_ context.Context, id string) error {
+	delete(r.items, id)
 	return nil
 }
 func (r *memRepo) DeleteItemsByBatch(_ context.Context, batchID string) error {
@@ -192,6 +204,8 @@ func (r *memRepo) ListItemsByParticipant(_ context.Context, pid string) ([]*fina
 			out = append(out, it)
 		}
 	}
+	// 与 GormRepository 的 date ASC 保持一致（真实实现按日期升序返回）
+	sort.SliceStable(out, func(i, j int) bool { return time.Time(out[i].Date).Before(time.Time(out[j].Date)) })
 	return out, nil
 }
 func (r *memRepo) CreateSubmission(_ context.Context, s *finance.TurnoverSubmission) error {
@@ -207,6 +221,17 @@ func (r *memRepo) ListSubmissionsByItem(_ context.Context, itemID string) ([]*fi
 	}
 	return out, nil
 }
+func (r *memRepo) GetSubmission(_ context.Context, id string) (*finance.TurnoverSubmission, error) {
+	sub, ok := r.submissions[id]
+	if !ok {
+		return nil, finance.ErrNotFound
+	}
+	return sub, nil
+}
+func (r *memRepo) DeleteSubmission(_ context.Context, id string) error {
+	delete(r.submissions, id)
+	return nil
+}
 func (r *memRepo) DeleteSubmissionsByItem(_ context.Context, itemID string) error {
 	for k, s := range r.submissions {
 		if s.ItemID == itemID {
@@ -214,6 +239,15 @@ func (r *memRepo) DeleteSubmissionsByItem(_ context.Context, itemID string) erro
 		}
 	}
 	return nil
+}
+func (r *memRepo) CountSubmissionsByBatch(_ context.Context, batchID string) (int64, error) {
+	var n int64
+	for _, s := range r.submissions {
+		if it, ok := r.items[s.ItemID]; ok && it.BatchID == batchID {
+			n++
+		}
+	}
+	return n, nil
 }
 func (r *memRepo) EnsureDefaultAccount(_ context.Context) (*finance.Account, error) {
 	if r.account == nil {
@@ -241,23 +275,27 @@ func (r *memRepo) Balance(_ context.Context) (int64, error) {
 }
 
 type memPreviewStore struct {
-	rows map[string][]finance.ImportRow
+	rows map[string]finance.ImportPreview
 }
 
 func newMemPreviewStore() *memPreviewStore {
-	return &memPreviewStore{rows: map[string][]finance.ImportRow{}}
+	return &memPreviewStore{rows: map[string]finance.ImportPreview{}}
 }
 
-func (m *memPreviewStore) SetPreview(_ context.Context, id string, rows []finance.ImportRow, _ time.Duration) error {
-	m.rows[id] = rows
+func (m *memPreviewStore) SetPreview(_ context.Context, id string, preview finance.ImportPreview, _ time.Duration) error {
+	m.rows[id] = preview
 	return nil
 }
-func (m *memPreviewStore) GetPreview(_ context.Context, id string) ([]finance.ImportRow, error) {
-	rows, ok := m.rows[id]
+func (m *memPreviewStore) GetPreview(_ context.Context, id string) (finance.ImportPreview, error) {
+	p, ok := m.rows[id]
 	if !ok {
-		return nil, finance.ErrPreviewNotFound
+		return finance.ImportPreview{}, finance.ErrPreviewNotFound
 	}
-	return rows, nil
+	return p, nil
+}
+func (m *memPreviewStore) DelPreview(_ context.Context, id string) error {
+	delete(m.rows, id)
+	return nil
 }
 
 // ---- 夹具 ----
@@ -395,9 +433,17 @@ func TestFinance_ItemFormulaAndParticipantReuse(t *testing.T) {
 	// 手动覆盖应交
 	item2 := f.addItem(t, batchID, finance.CreateItemRequest{
 		Name: "李同学", StudentNo: "2023002", Date: "2026-08-20",
-		PayrollAmount: 250000, TaxAmount: 5000, TipAmount: 10000, ShouldReturn: 235000,
+		PayrollAmount: 250000, TaxAmount: 5000, TipAmount: 10000, ShouldReturn: i64(235000),
 	})
 	assert.Equal(t, int64(235000), item2.ShouldReturn)
+
+	// 显式应交 0:应发≠辛苦费也能表达真实 0(区别于"省略=自动")
+	item0 := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "钱同学", StudentNo: "2023006", Date: "2026-08-20",
+		PayrollAmount: 250000, TaxAmount: 0, TipAmount: 10000, ShouldReturn: i64(0),
+	})
+	assert.Equal(t, int64(0), item0.ShouldReturn, "显式 0 应被采用,而非回退公式")
+	assert.Equal(t, finance.ItemStatusDone, item0.Status, "应交 0 视为已交清")
 
 	// 缺字段 → 400
 	_, err := f.svc.CreateItem(context.Background(), adminID, batchID, finance.CreateItemRequest{
@@ -559,7 +605,7 @@ func TestFinance_ImportPreviewAndConfirm(t *testing.T) {
 	imported, skipped, err := f.svc.ConfirmImport(context.Background(), adminID, previewID, batchID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, imported)
-	assert.Equal(t, 0, skipped)
+	assert.Equal(t, 2, skipped, "skipped = 预览中被排除的行数(2 行错误)")
 
 	got, err := f.svc.GetBatch(context.Background(), adminID, batchID)
 	require.NoError(t, err)
@@ -625,6 +671,229 @@ func TestFinance_CompleteBatchRequiresAllPaid(t *testing.T) {
 	assert.ErrorIs(t, err, finance.ErrBatchNotDone)
 }
 
+// ---- 明细纠错(PATCH / DELETE) ----
+
+func TestFinance_UpdateItem(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20",
+		PayrollAmount: 250000, TaxAmount: 0, TipAmount: 10000,
+	})
+	ctx := context.Background()
+
+	// 无上交:可改金额,应交按公式重算
+	view, err := f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{
+		PayrollAmount: i64(300000), TipAmount: i64(20000),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(300000), view.PayrollAmount)
+	assert.Equal(t, int64(280000), view.ShouldReturn, "改了应发/辛苦费→按公式重算")
+
+	// 显式应交(允许 0)
+	view, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{ShouldReturn: i64(0)})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), view.ShouldReturn)
+
+	// 仅改日期/备注
+	d := "2026-08-25"
+	note := "改备注"
+	view, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{Date: &d, Note: &note})
+	require.NoError(t, err)
+	assert.Equal(t, "2026-08-25", view.Date.String())
+	assert.Equal(t, "改备注", view.Note)
+
+	// 校验:应发必须为正
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{PayrollAmount: i64(0)})
+	assert.ErrorIs(t, err, finance.ErrItemFields)
+
+	// 不存在 → 404
+	_, err = f.svc.UpdateItem(ctx, adminID, "no-such", finance.UpdateItemRequest{Note: &note})
+	assert.ErrorIs(t, err, finance.ErrItemNotFound)
+}
+
+func TestFinance_UpdateItemLockedAfterSubmit(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 250000,
+	})
+	_, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+
+	// 已有上交 → 金额类字段锁定
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{PayrollAmount: i64(300000)})
+	assert.ErrorIs(t, err, finance.ErrItemHasReturned)
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{ShouldReturn: i64(1)})
+	assert.ErrorIs(t, err, finance.ErrItemHasReturned)
+
+	// 仅日期/备注仍可改
+	note := "备注可改"
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{Note: &note})
+	assert.NoError(t, err)
+
+	// done 批次不可改
+	_, err = f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 150000, Date: "2026-08-22"})
+	require.NoError(t, err)
+	_, err = f.svc.CompleteBatch(ctx, adminID, batchID)
+	require.NoError(t, err)
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{Note: &note})
+	assert.ErrorIs(t, err, finance.ErrBatchDone)
+}
+
+func TestFinance_DeleteItem(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+	free := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "A", StudentNo: "1", Date: "2026-08-20", PayrollAmount: 100000,
+	})
+	paid := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "B", StudentNo: "2", Date: "2026-08-20", PayrollAmount: 100000,
+	})
+	_, err := f.svc.Submit(ctx, adminID, paid.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+
+	// 有上交 → 不可删
+	assert.ErrorIs(t, f.svc.DeleteItem(ctx, adminID, paid.ID), finance.ErrItemHasReturned)
+
+	// 无上交 → 可删
+	require.NoError(t, f.svc.DeleteItem(ctx, adminID, free.ID))
+	got, err := f.svc.GetBatch(ctx, adminID, batchID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), got.Summary.ItemCount)
+
+	// 不存在 → 404
+	assert.ErrorIs(t, f.svc.DeleteItem(ctx, adminID, "no-such"), finance.ErrItemNotFound)
+}
+
+// ---- 撤销上交 ----
+
+func TestFinance_VoidSubmission(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 250000,
+	})
+	sub, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21", Note: "微信"})
+	require.NoError(t, err)
+
+	bal, _, err := f.svc.Ledger(ctx, adminID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(100000), bal)
+
+	// 撤销 → returned 回退、余额归 0、留一条冲正支出
+	view, err := f.svc.VoidSubmission(ctx, adminID, sub.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), view.Returned)
+	assert.Equal(t, finance.ItemStatusPending, view.Status)
+	assert.Empty(t, view.Submissions)
+
+	bal, txns, err := f.svc.Ledger(ctx, adminID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), bal, "撤销后余额回到上交前")
+	require.Len(t, txns, 2, "原收入流水保留 + 冲正支出")
+	var found bool
+	for _, tx := range txns {
+		if tx.Category == finance.CategoryTurnoverVoid {
+			found = true
+			assert.Equal(t, finance.TxExpense, tx.Type)
+			assert.Equal(t, int64(100000), tx.Amount)
+		}
+	}
+	assert.True(t, found, "应存在 turnover_void 冲正流水")
+
+	// 再次撤销同一条 → 404
+	_, err = f.svc.VoidSubmission(ctx, adminID, sub.ID)
+	assert.ErrorIs(t, err, finance.ErrSubmissionNotFound)
+
+	// 撤销后金额类字段解锁可改
+	_, err = f.svc.UpdateItem(ctx, adminID, item.ID, finance.UpdateItemRequest{PayrollAmount: i64(200000)})
+	assert.NoError(t, err)
+}
+
+func TestFinance_VoidSubmissionDoneBatch(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 100000,
+	})
+	sub, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+	_, err = f.svc.CompleteBatch(ctx, adminID, batchID)
+	require.NoError(t, err)
+
+	_, err = f.svc.VoidSubmission(ctx, adminID, sub.ID)
+	assert.ErrorIs(t, err, finance.ErrBatchDone)
+}
+
+// ---- 批次删除一致性 ----
+
+func TestFinance_DeleteBatchBlockedBySubmissions(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+	item := f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-20", PayrollAmount: 100000,
+	})
+	_, err := f.svc.Submit(ctx, adminID, item.ID, finance.SubmitRequest{Amount: 100000, Date: "2026-08-21"})
+	require.NoError(t, err)
+
+	// 有上交 → 拒绝删除(避免留下孤儿收入流水)
+	assert.ErrorIs(t, f.svc.DeleteBatch(ctx, adminID, batchID), finance.ErrCannotDelete)
+
+	// 撤销上交后可删
+	_, _ = f.svc.VoidSubmission(ctx, adminID, mustSub(t, f, item.ID))
+	require.NoError(t, f.svc.DeleteBatch(ctx, adminID, batchID))
+}
+
+// ---- 导入查重与幂等 ----
+
+func TestFinance_ImportDedupAndConsume(t *testing.T) {
+	f := newFixture(t)
+	f.seedRoles()
+	ctx := context.Background()
+	batchID := f.newBatch(t, "2026-08")
+
+	// 批次内已有 张同学/2023001
+	f.addItem(t, batchID, finance.CreateItemRequest{
+		Name: "张同学", StudentNo: "2023001", Date: "2026-08-10", PayrollAmount: 100000,
+	})
+
+	data := makeXLSX(t,
+		[]string{"姓名", "学号", "日期", "应发", "扣税", "辛苦费", "备注"},
+		[][]string{
+			{"李同学", "2023002", "2026-08-20", "2500", "0", "100", ""}, // 有效
+			{"李同学", "2023002", "2026-08-21", "2500", "0", "100", ""}, // 文件内重复
+			{"张同学", "2023001", "2026-08-20", "2500", "0", "100", ""}, // 批次内重复
+		})
+
+	previewID, valid, errs, err := f.svc.ImportPreview(ctx, adminID, batchID, bytes.NewReader(data))
+	require.NoError(t, err)
+	require.Len(t, valid, 1, "仅 1 行有效")
+	require.Len(t, errs, 2, "文件内重复 + 批次内重复")
+	assert.Contains(t, strings.Join(errs, "|"), "本次文件中重复")
+	assert.Contains(t, strings.Join(errs, "|"), "已存在同 姓名+学号")
+
+	imported, skipped, err := f.svc.ConfirmImport(ctx, adminID, previewID, batchID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, imported)
+	assert.Equal(t, 2, skipped)
+
+	// 消费式:再次确认 → 404
+	_, _, err = f.svc.ConfirmImport(ctx, adminID, previewID, batchID)
+	assert.ErrorIs(t, err, finance.ErrPreviewNotFound)
+}
+
 // ---- 工具 ----
 
 // excelizeTestFile 生成测试 xlsx 文件(首行表头 + 数据行)。
@@ -643,6 +912,17 @@ func excelizeTestFile(t *testing.T, header []string, rows [][]string) *excelize.
 		}
 	}
 	return f
+}
+
+func i64(v int64) *int64 { return &v }
+
+// mustSub 取某明细的唯一上交记录 id。
+func mustSub(t *testing.T, f *fixture, itemID string) string {
+	t.Helper()
+	subs, err := f.repo.ListSubmissionsByItem(context.Background(), itemID)
+	require.NoError(t, err)
+	require.Len(t, subs, 1)
+	return subs[0].ID
 }
 
 var _ = errors.Is
