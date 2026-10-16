@@ -158,7 +158,7 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 | POST | `/finance/batches` | 💰 | `{name, note?}` | `201 {batch}` |
 | GET | `/finance/batches` | 💰 | — | `{batches: []}`(含汇总) |
 | GET | `/finance/batches/:id` | 💰 | — | `{batch, summary, items: []}` |
-| DELETE | `/finance/batches/:id` | 💰 | — | `204`(仅 active) |
+| DELETE | `/finance/batches/:id` | 💰 | — | `204`(仅 active **且无任何上交记录**;有上交/已完成 → 400) |
 | POST | `/finance/batches/:id/complete` | 💰 | — | `{batch}`(全部交清才可完成) |
 
 `batch`:`{id, name, status(active/done), note, created_at}`
@@ -169,24 +169,32 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
 | POST | `/finance/batches/:id/items` | 💰 | `{name, student_no, date, payroll_amount, tax_amount?, tip_amount, should_return?, note?}` | `201 {item}` |
+| PATCH | `/finance/items/:id` | 💰 | `{date?, payroll_amount?, tax_amount?, tip_amount?, should_return?, note?}` | `200 {item}`(明细纠错,见下) |
+| DELETE | `/finance/items/:id` | 💰 | — | `204`(仅 active 且 returned==0;有上交 → 400) |
 | GET | `/finance/import-template` | 💰 | — | xlsx 模板文件(表头:姓名/学号/日期/应发/扣税/辛苦费/备注) |
-| POST | `/finance/batches/:id/items/import-preview` | 💰 | multipart:`file`(.xlsx) | `200 {preview_id, valid_rows: [], error_rows: []}` |
+| POST | `/finance/batches/:id/items/import-preview` | 💰 | multipart:`file`(.xlsx) | `200 {preview_id, valid_rows: [], error_rows: [], valid_count, error_count}` |
 | POST | `/finance/imports/:preview_id/confirm` | 💰 | — | `200 {imported_count, skipped_count}` |
 
-- `item`:`{id, batch_id, participant:{id,name,student_no}, date, payroll_amount, tax_amount, tip_amount, should_return, returned, unreturned, note, status(pending/partial/done)}`(分)
+- `item`:`{id, batch_id, participant:{id,name,student_no}, date, payroll_amount, tax_amount, tip_amount, should_return, returned, unreturned, note, status(pending/partial/done), submissions: []}`(分)
 - **应交公式**:`should_return = payroll_amount − tip_amount`(**扣税不减**,只记录;自动计算,可手动覆盖);
 - 导入列(表头识别,顺序无关):`姓名 / 学号 / 日期 / 应发 / 扣税 / 辛苦费 / 备注`;
+- **导入查重**:文件内重复(同 姓名+学号)与批次内重复(该批次已存在同 姓名+学号)均计入 `error_rows`、不进 `valid_rows`;
+- **导入幂等**:预览确认后即失效(消费式),同一 `preview_id` 再次确认 → 404;
 - **日期格式**:兼容 `2026-08-22` 与 `2026/8/22`(导入时自动归一化),**API 统一返回 `YYYY-MM-DD` 纯日期**;
 - `unreturned = should_return − returned`;`status` 由 returned 推导:0=未交,`0<returned<should_return`=部分交,`>=`=已交清。
+- **明细纠错(PATCH)**:批次 done → 400;该明细已有上交(returned>0)时**仅允许改 date/note**,金额类字段(payroll/tax/tip/should_return)→ 400(需先 `void` 撤销上交);
+  `should_return` 显式给出则采用(**允许 0**);省略且改动了 payroll/tip 时按公式重算,否则保持不变。
 
 ### 上交
 
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
 | POST | `/finance/items/:id/submit` | 💰 | `{amount, date, note?}` | `201 {submission}` |
+| POST | `/finance/submissions/:id/void` | 💰 | — | `200 {item}`(撤销上交:删除记录 + 回退 returned + 记一笔冲正流水) |
 
 - `submission`:`{id, item_id, amount, date, note, operator:{id,display_name}, created_at}`(分);
-- 每次上交:item.returned 累加 + **资金池自动 +amount**(同事务);上交金额 > 未交 → 400。
+- 每次上交:item.returned 累加 + **资金池自动 +amount**(同事务);上交金额 > 未交 → 400;
+- 撤销上交:同事务删除该 submission、`item.returned -= amount`、记一笔支出流水(类别 `turnover_void`,金额=原上交额),余额回到上交前;批次 done → 400,submission 不存在 → 404。
 
 ### 资金池
 
@@ -197,6 +205,7 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 | POST | `/finance/ledger/expense` | 💰 | `{amount, date, note?}` | `201 {transaction}`(资金支出) |
 
 - `transaction`:`{id, type(income/expense), amount, category, note, occurred_at, operator:{id,display_name}, created_at}`(分);
+- `category`:收入 `turnover`(上交回笼)/`supplement`;支出 `labor`(劳务发放)/`turnover_void`(撤销上交冲正)/`other`;
 - `balance`(分)= Σincome − Σexpense,实时计算。
 
 ### 参与同学库

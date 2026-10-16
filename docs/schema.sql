@@ -245,7 +245,7 @@ CREATE TABLE turnover_items (
     payroll_amount BIGINT NOT NULL DEFAULT 0,   -- 应发(分)
     tax_amount     BIGINT NOT NULL DEFAULT 0,   -- 扣税(分,人工算好只登记)
     tip_amount     BIGINT NOT NULL DEFAULT 0,   -- 辛苦费(分)
-    should_return  BIGINT NOT NULL DEFAULT 0,   -- 应交(分,默认=应发−扣税−辛苦费,可覆盖)
+    should_return  BIGINT NOT NULL DEFAULT 0,   -- 应交(分,默认=应发−辛苦费;扣税仅登记不减,可覆盖)
     returned       BIGINT NOT NULL DEFAULT 0,   -- 已交(分,由上交记录累加)
     note           TEXT NOT NULL DEFAULT '',
     created_by     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
