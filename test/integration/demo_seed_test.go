@@ -72,6 +72,38 @@ func TestDemoSeedDeterministicAndHighFidelity(t *testing.T) {
 		assert.Contains(t, statuses, want, "任务状态覆盖")
 	}
 
+	// 资源库 v2:分类覆盖 / 置顶 / 计数 / 收藏(见 docs/specs/dev-demo-data.md §4)
+	var catCount int64
+	require.NoError(t, db.Table("resource_categories").Count(&catCount).Error)
+	assert.GreaterOrEqual(t, catCount, int64(6), "内置分类应存在")
+
+	var uncategorized int64
+	require.NoError(t, db.Table("resources").Where("category_id IS NULL").Count(&uncategorized).Error)
+	assert.EqualValues(t, 0, uncategorized, "每条种子资源都应分配分类")
+
+	var distinctCats int64
+	require.NoError(t, db.Table("resources").Where("category_id IS NOT NULL").Distinct("category_id").Count(&distinctCats).Error)
+	assert.GreaterOrEqual(t, distinctCats, int64(5), "资源应覆盖多个分类")
+
+	var pinnedCount int64
+	require.NoError(t, db.Table("resources").Where("pinned = ?", true).Count(&pinnedCount).Error)
+	assert.GreaterOrEqual(t, pinnedCount, int64(2), "应存在置顶资源")
+
+	var distinctViews int64
+	require.NoError(t, db.Table("resources").Distinct("view_count").Count(&distinctViews).Error)
+	assert.Greater(t, distinctViews, int64(1), "浏览计数应有多种取值")
+
+	var favCount int64
+	require.NoError(t, db.Table("resource_favorites").Count(&favCount).Error)
+	assert.GreaterOrEqual(t, favCount, int64(2), "应存在个人收藏")
+
+	// 真实时间线:公开帖与资源的创建时间应分散,而非同一时刻
+	var docSpanDays, resSpanDays float64
+	require.NoError(t, db.Raw("SELECT EXTRACT(EPOCH FROM (max(created_at) - min(created_at)))/86400 FROM documents WHERE visibility = 'public'").Scan(&docSpanDays).Error)
+	require.NoError(t, db.Raw("SELECT EXTRACT(EPOCH FROM (max(created_at) - min(created_at)))/86400 FROM resources").Scan(&resSpanDays).Error)
+	assert.GreaterOrEqual(t, docSpanDays, 5.0, "公开帖创建时间跨度应≥5 天")
+	assert.GreaterOrEqual(t, resSpanDays, 5.0, "资源创建时间跨度应≥5 天")
+
 	// 经费:批次 + 流水
 	assert.GreaterOrEqual(t, second.TurnoverBatches, 2)
 	assert.GreaterOrEqual(t, second.Transactions, 1)

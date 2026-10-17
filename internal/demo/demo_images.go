@@ -25,8 +25,12 @@ type demoImage struct {
 	description  string
 	originalName string
 	uploader     string
+	category     string // 资源库 v2 分类名
 	tags         []string
 	postKey      string // 需要内嵌该图片的公开帖子(key),为空则只做资源
+	views        int64
+	downloads    int64
+	ageHours     int
 
 	relPath string // 落盘相对路径(uploads/…)
 	size    int64  // 文件字节数
@@ -38,14 +42,16 @@ func demoImageDefs() []demoImage {
 		{
 			file: demoSamplingImage, title: "DDIM vs DPM-Solver 采样质量对比",
 			description:  "不同采样步数下的 FID 与采样耗时对比(演示图片)。",
-			originalName: "sampling-quality.png", uploader: "student1",
+			originalName: "sampling-quality.png", uploader: "student1", category: "其他",
 			tags: []string{"实验", "深度学习"}, postKey: "sampling",
+			views: 121, downloads: 8, ageHours: 20,
 		},
 		{
 			file: demoCifarImage, title: "CIFAR-10 清洗后样例网格",
 			description:  "清洗去重后的 CIFAR-10 子集样例(演示图片)。",
-			originalName: "cifar10-samples.png", uploader: "student3",
+			originalName: "cifar10-samples.png", uploader: "student3", category: "数据集",
 			tags: []string{"数据集"}, postKey: "dataset",
+			views: 156, downloads: 34, ageHours: 24*5 + 6,
 		},
 	}
 }

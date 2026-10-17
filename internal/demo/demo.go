@@ -43,6 +43,12 @@ const DefaultUploadDir = "data/uploads"
 const (
 	demoFileName = "demo-seed-group-meeting.txt"
 	demoFileRel  = "uploads/" + demoFileName
+
+	demoWeeklyTemplateName = "demo-weekly-report-template.txt"
+	demoWeeklyTemplateRel  = "uploads/" + demoWeeklyTemplateName
+
+	demoExpTemplateName = "demo-experiment-record-template.txt"
+	demoExpTemplateRel  = "uploads/" + demoExpTemplateName
 )
 
 // DemoPasswordFor 返回指定演示账号的登录密码(供日志与文档展示)。
@@ -75,6 +81,7 @@ type Result struct {
 	Reactions        int
 	Resources        int
 	Images           int
+	Favorites        int
 	FileResourcePath string
 	FileResourceSize int64
 	Projects         int
@@ -99,7 +106,7 @@ func Seed(ctx context.Context, db *gorm.DB, uploadDir string) (*Result, error) {
 	if uploadDir == "" {
 		uploadDir = DefaultUploadDir
 	}
-	fileSize, err := writeDemoFile(uploadDir)
+	fileSizes, err := writeDemoFiles(uploadDir)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +115,7 @@ func Seed(ctx context.Context, db *gorm.DB, uploadDir string) (*Result, error) {
 		return nil, err
 	}
 
-	res := &Result{FileResourcePath: demoFileRel, FileResourceSize: fileSize}
+	res := &Result{FileResourcePath: demoFileRel, FileResourceSize: fileSizes[demoFileRel]}
 	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := truncateBusinessTables(tx); err != nil {
 			return err
@@ -119,9 +126,13 @@ func Seed(ctx context.Context, db *gorm.DB, uploadDir string) (*Result, error) {
 		}
 		s := &seeder{
 			tx: tx, res: res, images: images,
-			users: map[string]*user.User{}, spaces: map[string]*space.Space{}, taskTypes: map[string]string{},
+			users: map[string]*user.User{}, spaces: map[string]*space.Space{},
+			taskTypes: map[string]string{}, categories: map[string]string{},
 		}
 		if err := s.loadTaskTypes(); err != nil {
+			return err
+		}
+		if err := s.loadCategories(); err != nil {
 			return err
 		}
 		if err := s.seedUsers(); err != nil {
@@ -136,7 +147,7 @@ func Seed(ctx context.Context, db *gorm.DB, uploadDir string) (*Result, error) {
 		if err := s.seedDocuments(); err != nil {
 			return err
 		}
-		if err := s.seedResources(fileSize); err != nil {
+		if err := s.seedResources(fileSizes); err != nil {
 			return err
 		}
 		if err := s.attachPostImages(); err != nil {
@@ -162,38 +173,67 @@ func truncateBusinessTables(tx *gorm.DB) error {
 	return nil
 }
 
-// writeDemoFile 写入演示文件资源(覆盖旧文件,保证幂等),返回字节数。
-func writeDemoFile(uploadDir string) (int64, error) {
+// writeDemoFiles 写入演示文本文件资源(覆盖旧文件,保证幂等),返回相对路径→字节数。
+func writeDemoFiles(uploadDir string) (map[string]int64, error) {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		return 0, fmt.Errorf("create upload dir: %w", err)
+		return nil, fmt.Errorf("create upload dir: %w", err)
 	}
-	content := "LabNexus 演示文件资源\n" +
-		"========================================\n" +
-		"这是 make seed-demo 自动生成的示例文件,用于体验文件资源的下载与预览。\n\n" +
-		"本周组会纪要(示例):\n" +
-		"1. 张伟:扩散模型采样加速实验进展,已完成基线复现;\n" +
-		"2. 王芳:文献综述初稿完成,待补充近三个月工作;\n" +
-		"3. 陈浩:数据集清洗完成,CIFAR-10 子集可直接用于训练;\n" +
-		"4. 下周重点:确定改进方案并开始消融实验。\n"
-	path := filepath.Join(uploadDir, demoFileName)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return 0, fmt.Errorf("write demo file: %w", err)
+	defs := []struct {
+		rel     string
+		name    string
+		content string
+	}{
+		{demoFileRel, demoFileName,
+			"LabNexus 演示文件资源\n" +
+				"========================================\n" +
+				"这是 make seed-demo 自动生成的示例文件,用于体验文件资源的下载与预览。\n\n" +
+				"本周组会纪要(示例):\n" +
+				"1. 张伟:扩散模型采样加速实验进展,已完成基线复现;\n" +
+				"2. 王芳:文献综述初稿完成,待补充近三个月工作;\n" +
+				"3. 陈浩:数据集清洗完成,CIFAR-10 子集可直接用于训练;\n" +
+				"4. 下周重点:确定改进方案并开始消融实验。\n"},
+		{demoWeeklyTemplateRel, demoWeeklyTemplateName,
+			"周报模板 v3(组内统一格式)\n" +
+				"========================================\n" +
+				"姓名:___________  周期:____ 月 ____ 日 ~ ____ 月 ____ 日\n\n" +
+				"1. 本周进展(按任务列,标注完成度)\n" +
+				"   - \n2. 遇到的问题 / 需要的支持\n" +
+				"   - \n3. 下周计划\n" +
+				"   - \n4. 数据与代码\n" +
+				"   - 实验记录链接 / W&B run 链接:\n"},
+		{demoExpTemplateRel, demoExpTemplateName,
+			"实验记录模板(四段式)\n" +
+				"========================================\n" +
+				"【配置】模型 / 数据集 / 超参 / 随机种子\n\n" +
+				"【现象】观察到的主要结果与关键指标(FID / PSNR / 准确率…)\n\n" +
+				"【结论】与基线对比,是否支持当前假设\n\n" +
+				"【待办】下一步要验证的消融或方向\n"},
 	}
-	return int64(len(content)), nil
+	sizes := map[string]int64{}
+	for _, d := range defs {
+		base := strings.TrimPrefix(d.rel, "uploads/")
+		path := filepath.Join(uploadDir, base)
+		if err := os.WriteFile(path, []byte(d.content), 0o644); err != nil {
+			return nil, fmt.Errorf("write demo file %s: %w", d.name, err)
+		}
+		sizes[d.rel] = int64(len(d.content))
+	}
+	return sizes, nil
 }
 
 // ---------- seeder ----------
 
 type seeder struct {
-	tx        *gorm.DB
-	res       *Result
-	images    []demoImage
-	users     map[string]*user.User
-	spaces    map[string]*space.Space
-	taskTypes map[string]string
-	tags      map[string]*tag.Tag
-	docs      map[string]*document.Document
-	resources map[string]*resource.Resource
+	tx         *gorm.DB
+	res        *Result
+	images     []demoImage
+	users      map[string]*user.User
+	spaces     map[string]*space.Space
+	taskTypes  map[string]string
+	categories map[string]string
+	tags       map[string]*tag.Tag
+	docs       map[string]*document.Document
+	resources  map[string]*resource.Resource
 }
 
 func (s *seeder) loadTaskTypes() error {
@@ -203,6 +243,18 @@ func (s *seeder) loadTaskTypes() error {
 	}
 	for i := range list {
 		s.taskTypes[list[i].Name] = list[i].ID
+	}
+	return nil
+}
+
+// loadCategories 读取迁移内置的资源分类字典(name → id),供资源分配分类。
+func (s *seeder) loadCategories() error {
+	var list []resource.ResourceCategory
+	if err := s.tx.Find(&list).Error; err != nil {
+		return fmt.Errorf("load resource categories: %w", err)
+	}
+	for i := range list {
+		s.categories[list[i].Name] = list[i].ID
 	}
 	return nil
 }
@@ -287,9 +339,13 @@ func (s *seeder) folder(username, name string, parent *string, order int) (*spac
 	return f, nil
 }
 
-func (s *seeder) doc(username string, folderID *string, title, content, visibility string, pinned bool) (*document.Document, error) {
+func (s *seeder) doc(username string, folderID *string, title, content, visibility string, pinned bool, ageHours int) (*document.Document, error) {
 	d := document.NewDocument(s.users[username].ID, s.spaces[username].ID, folderID, title, content, visibility)
 	d.Pinned = pinned
+	if ageHours > 0 {
+		d.CreatedAt = hoursAgo(ageHours)
+		d.UpdatedAt = d.CreatedAt
+	}
 	if err := s.tx.Create(d).Error; err != nil {
 		return nil, fmt.Errorf("create document %q: %w", title, err)
 	}
@@ -312,8 +368,11 @@ func (s *seeder) tagDoc(docID string, tagNames ...string) error {
 	return nil
 }
 
-func (s *seeder) comment(docID, username, content string, replyTo *string) (*document.Comment, error) {
+func (s *seeder) comment(docID, username, content string, replyTo *string, ageHours int) (*document.Comment, error) {
 	c := document.NewComment(docID, s.users[username].ID, content, replyTo)
+	if ageHours > 0 {
+		c.CreatedAt = hoursAgo(ageHours)
+	}
 	if err := s.tx.Create(c).Error; err != nil {
 		return nil, fmt.Errorf("create comment: %w", err)
 	}
@@ -349,22 +408,23 @@ func (s *seeder) seedDocuments() error {
 
 	// 公开帖子(信息流)
 	posts := []struct {
-		key     string
-		user    string
-		folder  *string
-		title   string
-		content string
-		pinned  bool
-		tags    []string
+		key      string
+		user     string
+		folder   *string
+		title    string
+		content  string
+		pinned   bool
+		ageHours int
+		tags     []string
 	}{
-		{"meeting", SupervisorUser, nil, "组会安排:本周五 15:00 306 会议室", "本周组会安排如下:\n- 时间:周五 15:00\n- 地点:306 会议室\n- 汇报顺序:张伟、王芳、陈浩\n\n请各位提前把 PPT 发到群里。", true, []string{"组会"}},
-		{"sampling", "student1", nil, "本周汇报:扩散模型采样加速实验进展", "已完成 DDIM / DPM-Solver 基线复现,采样步数从 1000 降到 50,质量下降在可接受范围。\n\n下一步:\n1. 尝试一致性模型蒸馏;\n2. 补充消融实验。", true, []string{"实验", "深度学习"}},
-		{"paper", "student2", &litFolder.ID, "文献分享:Classifier-Free Diffusion Guidance", "这篇是 CFG 的原始工作,核心是用同一个模型同时训练条件与无条件分支,推理时线性组合。\n\n值得注意的细节:训练时以 10%~20% 概率丢弃条件。", false, []string{"文献", "深度学习"}},
-		{"dataset", "student3", nil, "数据集整理:CIFAR-10 清洗完成", "清洗后的 CIFAR-10 子集已放到共享盘,标注去重完成,可直接用于训练。\n\n坐标:shared/datasets/cifar10-clean-v1", false, []string{"数据集"}},
-		{"writing", "student1", &paperFolder.ID, "投稿准备:AAAI 2027 时间线", "摘要截止:2026-08-15\n全文截止:2026-08-22\n\n当前进度:方法部分完成 60%,实验部分待补。", false, []string{"论文写作"}},
+		{"meeting", SupervisorUser, nil, "组会安排:本周五 15:00 306 会议室", "本周组会安排如下:\n- 时间:周五 15:00\n- 地点:306 会议室\n- 汇报顺序:张伟、王芳、陈浩\n\n请各位提前把 PPT 发到群里。", true, 6, []string{"组会"}},
+		{"sampling", "student1", nil, "本周汇报:扩散模型采样加速实验进展", "已完成 DDIM / DPM-Solver 基线复现,采样步数从 1000 降到 50,质量下降在可接受范围。\n\n下一步:\n1. 尝试一致性模型蒸馏;\n2. 补充消融实验。", true, 22, []string{"实验", "深度学习"}},
+		{"paper", "student2", &litFolder.ID, "文献分享:Classifier-Free Diffusion Guidance", "这篇是 CFG 的原始工作,核心是用同一个模型同时训练条件与无条件分支,推理时线性组合。\n\n值得注意的细节:训练时以 10%~20% 概率丢弃条件。", false, 24*3 + 2, []string{"文献", "深度学习"}},
+		{"dataset", "student3", nil, "数据集整理:CIFAR-10 清洗完成", "清洗后的 CIFAR-10 子集已放到共享盘,标注去重完成,可直接用于训练。\n\n坐标:shared/datasets/cifar10-clean-v1", false, 24*5 + 7, []string{"数据集"}},
+		{"writing", "student1", &paperFolder.ID, "投稿准备:AAAI 2027 时间线", "摘要截止:2026-08-15\n全文截止:2026-08-22\n\n当前进度:方法部分完成 60%,实验部分待补。", false, 24*8 + 4, []string{"论文写作"}},
 	}
 	for _, p := range posts {
-		d, err := s.doc(p.user, p.folder, p.title, p.content, document.VisibilityPublic, p.pinned)
+		d, err := s.doc(p.user, p.folder, p.title, p.content, document.VisibilityPublic, p.pinned, p.ageHours)
 		if err != nil {
 			return err
 		}
@@ -376,18 +436,19 @@ func (s *seeder) seedDocuments() error {
 
 	// 私密笔记
 	notes := []struct {
-		key     string
-		user    string
-		folder  *string
-		title   string
-		content string
-		tags    []string
+		key      string
+		user     string
+		folder   *string
+		title    string
+		content  string
+		ageHours int
+		tags     []string
 	}{
-		{"exp-note", "student1", &expFolder.ID, "实验记录 2026-10-12", "配置:batch=64, lr=1e-4, steps=50k\n\n现象:step 30k 后 loss 震荡,怀疑学习率过大。\n待办:尝试 cosine schedule。", []string{"实验"}},
-		{"ddpm-note", "student2", &litFolder.ID, "读书笔记:DDPM 前向/反向过程推导", "前向:q(x_t|x_0) 可以直接写闭式。\n反向:用网络预测噪声 eps,再重参数化采样。\n\n关键:变分下界可化简为噪声预测的 MSE。", []string{"文献", "深度学习"}},
+		{"exp-note", "student1", &expFolder.ID, "实验记录 2026-10-12", "配置:batch=64, lr=1e-4, steps=50k\n\n现象:step 30k 后 loss 震荡,怀疑学习率过大。\n待办:尝试 cosine schedule。", 24*2 + 3, []string{"实验"}},
+		{"ddpm-note", "student2", &litFolder.ID, "读书笔记:DDPM 前向/反向过程推导", "前向:q(x_t|x_0) 可以直接写闭式。\n反向:用网络预测噪声 eps,再重参数化采样。\n\n关键:变分下界可化简为噪声预测的 MSE。", 24*6 + 9, []string{"文献", "深度学习"}},
 	}
 	for _, n := range notes {
-		d, err := s.doc(n.user, n.folder, n.title, n.content, document.VisibilityPrivate, false)
+		d, err := s.doc(n.user, n.folder, n.title, n.content, document.VisibilityPrivate, false, n.ageHours)
 		if err != nil {
 			return err
 		}
@@ -398,17 +459,17 @@ func (s *seeder) seedDocuments() error {
 	}
 
 	// 评论 + 回复 + 点赞
-	c1, err := s.comment(s.docs["sampling"].ID, SupervisorUser, "基线复现得不错,注意对比不同采样器的 FID。", nil)
+	c1, err := s.comment(s.docs["sampling"].ID, SupervisorUser, "基线复现得不错,注意对比不同采样器的 FID。", nil, 18)
 	if err != nil {
 		return err
 	}
-	if _, err := s.comment(s.docs["sampling"].ID, "student2", "收到,我这周补 FID 对比表。", &c1.ID); err != nil {
+	if _, err := s.comment(s.docs["sampling"].ID, "student2", "收到,我这周补 FID 对比表。", &c1.ID, 15); err != nil {
 		return err
 	}
-	if _, err := s.comment(s.docs["paper"].ID, "student1", "这篇的 code 在 GitHub 上有非官方实现,可以直接跑。", nil); err != nil {
+	if _, err := s.comment(s.docs["paper"].ID, "student1", "这篇的 code 在 GitHub 上有非官方实现,可以直接跑。", nil, 24*3-3); err != nil {
 		return err
 	}
-	if _, err := s.comment(s.docs["dataset"].ID, "student4", "已下载,感谢整理!", nil); err != nil {
+	if _, err := s.comment(s.docs["dataset"].ID, "student4", "已下载,感谢整理!", nil, 24*5+2); err != nil {
 		return err
 	}
 	reactions := []struct {
@@ -430,83 +491,219 @@ func (s *seeder) seedDocuments() error {
 	return nil
 }
 
-func (s *seeder) resourceLink(title, desc, url, uploader string, tagNames ...string) (*resource.Resource, error) {
-	r := resource.NewResource(resource.TypeLink, title, s.users[uploader].ID)
-	r.Description = desc
-	r.URL = url
-	if err := s.tx.Create(r).Error; err != nil {
-		return nil, fmt.Errorf("create link resource: %w", err)
+// resourceSpec 描述一条种子资源的完整字段(含资源库 v2 的分类/置顶/计数/时间线)。
+type resourceSpec struct {
+	key       string
+	typ       string
+	title     string
+	desc      string
+	url       string
+	file      string
+	origName  string
+	mime      string
+	size      int64
+	uploader  string
+	category  string
+	tags      []string
+	pinned    bool
+	views     int64
+	downloads int64
+	ageHours  int
+}
+
+// createResource 按规格写入一条资源(含分类/置顶/计数/时间线与标签)。
+func (s *seeder) createResource(sp resourceSpec) (*resource.Resource, error) {
+	r := resource.NewResource(sp.typ, sp.title, s.users[sp.uploader].ID)
+	r.Description = sp.desc
+	if sp.typ == resource.TypeLink {
+		r.URL = sp.url
+	} else {
+		r.FilePath = sp.file
+		r.OriginalName = sp.origName
+		r.MimeType = sp.mime
+		r.FileSize = sp.size
 	}
-	for _, name := range tagNames {
+	if id, ok := s.categories[sp.category]; ok {
+		r.CategoryID = &id
+	}
+	r.Pinned = sp.pinned
+	r.ViewCount = sp.views
+	r.DownloadCount = sp.downloads
+	if sp.ageHours > 0 {
+		r.CreatedAt = hoursAgo(sp.ageHours)
+		r.UpdatedAt = r.CreatedAt
+	}
+	if err := s.tx.Create(r).Error; err != nil {
+		return nil, fmt.Errorf("create resource %q: %w", sp.title, err)
+	}
+	for _, name := range sp.tags {
 		link := resource.ResourceTag{ResourceID: r.ID, TagID: s.tags[name].ID}
 		if err := s.tx.Create(&link).Error; err != nil {
-			return nil, fmt.Errorf("tag resource: %w", err)
+			return nil, fmt.Errorf("tag resource %q: %w", sp.title, err)
 		}
 	}
 	s.res.Resources++
 	return r, nil
 }
 
-func (s *seeder) resourceFile(title, desc, originalName, mime string, size int64, uploader string, tagNames ...string) (*resource.Resource, error) {
-	return s.resourceFileAt(demoFileRel, title, desc, originalName, mime, size, uploader, tagNames...)
+// linkResourceSpecs 返回全部链接资源的纯规格定义(不依赖 DB,可单测)。
+func linkResourceSpecs() []resourceSpec {
+	// 链接资源:覆盖 6 个分类,时间线从数小时前到数周前。
+	return []resourceSpec{
+		{
+			key: "attention", typ: resource.TypeLink,
+			title: "Attention Is All You Need (arXiv)", desc: "Transformer 原始论文,组会必读,建议先看 §3.2 多头注意力推导。",
+			url: "https://arxiv.org/abs/1706.03762", uploader: SupervisorUser, category: "文献",
+			tags: []string{"文献", "深度学习"}, pinned: true, views: 268, ageHours: 24*26 + 2,
+		},
+		{
+			key: "ddim", typ: resource.TypeLink,
+			title: "DDIM: Denoising Diffusion Implicit Models (arXiv)", desc: "确定性采样加速的经典工作,步数可从 1000 降到 50 而质量损失可控。",
+			url: "https://arxiv.org/abs/2010.02502", uploader: "student1", category: "文献",
+			tags: []string{"文献", "深度学习"}, pinned: true, views: 143, ageHours: 24*9 + 5,
+		},
+		{
+			key: "cfg", typ: resource.TypeLink,
+			title: "Classifier-Free Diffusion Guidance (arXiv)", desc: "CFG 原始论文,训练时以 10%~20% 概率丢弃条件,推理时线性组合。",
+			url: "https://arxiv.org/abs/2207.12598", uploader: "student2", category: "文献",
+			tags: []string{"文献", "深度学习"}, views: 96, ageHours: 24*6 + 3,
+		},
+		{
+			key: "consistency", typ: resource.TypeLink,
+			title: "Consistency Models (arXiv)", desc: "一致性模型:单步/少步生成的代表工作,蒸馏路线的主要参考。",
+			url: "https://arxiv.org/abs/2303.01469", uploader: "student2", category: "文献",
+			tags: []string{"文献", "深度学习"}, views: 71, ageHours: 24*3 + 8,
+		},
+		{
+			key: "paperswithcode", typ: resource.TypeLink,
+			title: "Papers with Code - Image Generation", desc: "图像生成任务的榜单与开源实现合集,找基线/对比结果很方便。",
+			url: "https://paperswithcode.com/task/image-generation", uploader: "student3", category: "数据集",
+			tags: []string{"数据集", "文献"}, views: 58, ageHours: 24*4 + 11,
+		},
+		{
+			key: "pytorch", typ: resource.TypeLink,
+			title: "PyTorch 官方文档", desc: "训练/分布式相关的权威入口,版本升级先查这里。",
+			url: "https://pytorch.org/docs/stable/index.html", uploader: "student1", category: "工具",
+			tags: []string{"实验"}, views: 187, ageHours: 24*21 + 6,
+		},
+		{
+			key: "wandb", typ: resource.TypeLink,
+			title: "Weights & Biases 实验记录指南", desc: "组内统一用 W&B 记录实验,这里是命名与对比的约定。",
+			url: "https://docs.wandb.ai/", uploader: "student1", category: "工具",
+			tags: []string{"实验"}, views: 44, ageHours: 24*2 + 2,
+		},
+		{
+			key: "diffusers", typ: resource.TypeLink,
+			title: "Hugging Face Diffusers 源码", desc: "扩散模型工程实现参考,采样器集中在 src/diffusers/schedulers。",
+			url: "https://github.com/huggingface/diffusers", uploader: "student4", category: "代码",
+			tags: []string{"深度学习"}, views: 63, ageHours: 24*7 + 6,
+		},
+		{
+			key: "aaai", typ: resource.TypeLink,
+			title: "AAAI 2027 投稿时间线与注意事项", desc: "投稿节点、匿名要求与格式检查清单,组内投稿统一参考。",
+			url: "https://aaai.org/conference/aaai/aaai-27/", uploader: "student1", category: "其他",
+			tags: []string{"论文写作"}, views: 31, ageHours: 24*11 + 3,
+		},
+		{
+			key: "shared-drive", typ: resource.TypeLink,
+			title: "共享盘目录说明与访问方式", desc: "组内共享盘目录约定与挂载方式,数据/代码统一放这里。",
+			url: "https://example.internal/labnexus/shared-drive", uploader: "student3", category: "其他",
+			tags: []string{"数据集"}, views: 52, ageHours: 24*15 + 9,
+		},
+	}
 }
 
-// resourceFileAt 与 resourceFile 一致,但允许指定落盘路径(演示图片用)。
-func (s *seeder) resourceFileAt(fileRel, title, desc, originalName, mime string, size int64, uploader string, tagNames ...string) (*resource.Resource, error) {
-	r := resource.NewResource(resource.TypeFile, title, s.users[uploader].ID)
-	r.Description = desc
-	r.FilePath = fileRel
-	r.OriginalName = originalName
-	r.MimeType = mime
-	r.FileSize = size
-	if err := s.tx.Create(r).Error; err != nil {
-		return nil, fmt.Errorf("create file resource: %w", err)
+// fileResourceSpecs 返回全部文件资源的纯规格定义(不依赖 DB,可单测)。
+func fileResourceSpecs(fileSizes map[string]int64) []resourceSpec {
+	// 文件资源:本地落盘,可下载/预览。
+	return []resourceSpec{
+		{
+			key: "meeting-file", typ: resource.TypeFile,
+			title: "本周组会纪要(2026-10-16)", desc: "本周组会纪要,含各成员汇报要点与下周安排。",
+			file: demoFileRel, origName: demoFileName, mime: "text/plain; charset=utf-8", size: fileSizes[demoFileRel],
+			uploader: SupervisorUser, category: "模板", tags: []string{"组会"},
+			views: 39, downloads: 12, ageHours: 30,
+		},
+		{
+			key: "weekly-template", typ: resource.TypeFile,
+			title: "周报模板(v3)", desc: "组内周报统一模板:本周进展 / 遇到的问题 / 下周计划 / 数据与代码。",
+			file: demoWeeklyTemplateRel, origName: demoWeeklyTemplateName, mime: "text/plain; charset=utf-8", size: fileSizes[demoWeeklyTemplateRel],
+			uploader: "student2", category: "模板", tags: []string{"组会"},
+			views: 84, downloads: 27, ageHours: 24*12 + 4,
+		},
+		{
+			key: "exp-template", typ: resource.TypeFile,
+			title: "实验记录模板(四段式)", desc: "实验记录规范模板:配置 / 现象 / 结论 / 待办四段式。",
+			file: demoExpTemplateRel, origName: demoExpTemplateName, mime: "text/plain; charset=utf-8", size: fileSizes[demoExpTemplateRel],
+			uploader: "student1", category: "模板", tags: []string{"实验"},
+			views: 66, downloads: 19, ageHours: 24*5 + 4,
+		},
 	}
-	for _, name := range tagNames {
-		link := resource.ResourceTag{ResourceID: r.ID, TagID: s.tags[name].ID}
-		if err := s.tx.Create(&link).Error; err != nil {
-			return nil, fmt.Errorf("tag resource: %w", err)
-		}
-	}
-	s.res.Resources++
-	return r, nil
 }
 
-func (s *seeder) seedResources(fileSize int64) error {
+// imageResourceSpec 把演示图片转换为资源规格(纯函数,可单测)。
+func imageResourceSpec(def demoImage) resourceSpec {
+	return resourceSpec{
+		key: "image:" + def.file, typ: resource.TypeFile,
+		title: def.title, desc: def.description,
+		file: def.relPath, origName: def.originalName, mime: "image/png", size: def.size,
+		uploader: def.uploader, category: def.category, tags: def.tags,
+		views: def.views, downloads: def.downloads, ageHours: def.ageHours,
+	}
+}
+
+func (s *seeder) seedResources(fileSizes map[string]int64) error {
 	s.resources = map[string]*resource.Resource{}
-	links := []struct {
-		key, title, desc, url, uploader string
-		tags                            []string
-	}{
-		{"attention", "Attention Is All You Need (arXiv)", "Transformer 原始论文,组会必读。", "https://arxiv.org/abs/1706.03762", SupervisorUser, []string{"文献", "深度学习"}},
-		{"pytorch", "PyTorch 官方文档", "训练/分布式相关文档入口。", "https://pytorch.org/docs/stable/index.html", "student1", []string{"实验"}},
-		{"paperswithcode", "Papers with Code - 图像生成", "图像生成任务的榜单与代码合集。", "https://paperswithcode.com/task/image-generation", "student3", []string{"文献", "数据集"}},
-		{"ddim", "DDIM 论文 (arXiv)", "确定性采样,采样加速的经典工作。", "https://arxiv.org/abs/2010.02502", "student1", []string{"文献", "深度学习"}},
-	}
-	for _, l := range links {
-		r, err := s.resourceLink(l.title, l.desc, l.url, l.uploader, l.tags...)
-		if err != nil {
-			return err
-		}
-		s.resources[l.key] = r
-	}
-	f, err := s.resourceFile("本周组会纪要(示例文件)", "演示文件资源的下载与预览。", demoFileName, "text/plain; charset=utf-8", fileSize, SupervisorUser, "组会")
-	if err != nil {
-		return err
-	}
-	s.resources["meeting-file"] = f
 
-	// 图片资源:可在资源库卡片与信息流帖子中直接查看
+	links := linkResourceSpecs()
+	files := fileResourceSpecs(fileSizes)
+
+	specs := make([]resourceSpec, 0, len(links)+len(files)+len(s.images))
+	specs = append(specs, links...)
+	specs = append(specs, files...)
+
+	// 图片资源:可在资源库卡片与信息流帖子中直接查看。
 	for _, def := range s.images {
-		img, err := s.resourceFileAt(
-			def.relPath, def.title, def.description, def.originalName,
-			"image/png", def.size, def.uploader, def.tags...,
-		)
+		specs = append(specs, imageResourceSpec(def))
+		s.res.Images++
+	}
+
+	for _, sp := range specs {
+		r, err := s.createResource(sp)
 		if err != nil {
 			return err
 		}
-		s.resources["image:"+def.file] = img
-		s.res.Images++
+		if sp.key != "" {
+			s.resources[sp.key] = r
+		}
+	}
+
+	return s.seedFavorites()
+}
+
+// seedFavorites 为演示账号写入个人收藏,让“我的收藏”有真实内容。
+func (s *seeder) seedFavorites() error {
+	favs := []struct{ user, key string }{
+		{"student1", "attention"},
+		{"student1", "ddim"},
+		{"student1", "pytorch"},
+		{"student2", "attention"},
+		{"student2", "consistency"},
+		{"student2", "weekly-template"},
+		{"student3", "image:" + demoCifarImage},
+		{"student4", "diffusers"},
+		{SupervisorUser, "image:" + demoSamplingImage},
+	}
+	for _, f := range favs {
+		r, ok := s.resources[f.key]
+		if !ok {
+			continue
+		}
+		fav := resource.ResourceFavorite{UserID: s.users[f.user].ID, ResourceID: r.ID, CreatedAt: time.Now()}
+		if err := s.tx.Create(&fav).Error; err != nil {
+			return fmt.Errorf("create favorite %s→%s: %w", f.user, f.key, err)
+		}
+		s.res.Favorites++
 	}
 	return nil
 }
@@ -801,6 +998,11 @@ func (s *seeder) seedFinance() error {
 	}
 	s.res.Transactions++
 	return nil
+}
+
+// hoursAgo 返回距今 n 小时的时间,用于生成分散的演示时间线。
+func hoursAgo(n int) time.Time {
+	return time.Now().Add(-time.Duration(n) * time.Hour)
 }
 
 func daysFromNow(n int) string {
