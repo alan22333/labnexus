@@ -41,7 +41,7 @@ var truncateTables = []string{
 // 环境未就绪(容器未启动)时跳过该测试。
 func setupServer(t *testing.T) *gin.Engine {
 	t.Helper()
-	cfg := config.Load()
+	cfg := integrationConfig(t)
 	// 集成测试 CWD 为 test/integration;web 在项目根(绝对路径,http.Dir 拒绝 "..")
 	wd, _ := os.Getwd()
 	cfg.WebDir = filepath.Join(wd, "..", "..", "web")
@@ -52,19 +52,61 @@ func setupServer(t *testing.T) *gin.Engine {
 	if err != nil {
 		t.Skipf("集成环境未就绪(先 `make up` 启动 Postgres/Redis): %v", err)
 	}
-	// 先通过版本化迁移建表/升级(空库与既有 AutoMigrate 库均可),再清数据。
-	migrationDir := filepath.Join(wd, "..", "..", "migrations")
-	baselineErr := database.MigrateBaseline(context.Background(), cfg, migrationDir)
-	if errors.Is(baselineErr, database.ErrBaselineAlreadyVersioned) {
-		require.NoError(t, database.MigrateUp(context.Background(), cfg, migrationDir), "迁移数据库失败")
-	} else {
-		require.NoError(t, baselineErr, "基线迁移失败")
-	}
 	r, err := app.Build(cfg)
 	require.NoError(t, err, "app.Build 失败")
 	resetData(t, db, cfg)
 	closeDB(db)
 	return r
+}
+
+// testDBName 集成测试使用的独立数据库,避免 TRUNCATE 清空开发库 `labnexus`。
+// 可用环境变量 TEST_DB_NAME 覆盖;缺失时自动创建该库。
+const testDBName = "labnexus_test"
+
+// integrationConfig 返回指向独立测试库的配置,必要时自动创建测试库。
+func integrationConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := config.Load()
+	if name := os.Getenv("TEST_DB_NAME"); name != "" {
+		cfg.DBName = name
+	} else {
+		cfg.DBName = testDBName
+	}
+	ensureDatabaseExists(t, cfg)
+	migrateTestDB(t, cfg)
+	return cfg
+}
+
+// migrateTestDB 对独立测试库应用版本化迁移(空库与既有库均可)。
+func migrateTestDB(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	wd, _ := os.Getwd()
+	migrationDir := filepath.Join(wd, "..", "..", "migrations")
+	baselineErr := database.MigrateBaseline(context.Background(), cfg, migrationDir)
+	if errors.Is(baselineErr, database.ErrBaselineAlreadyVersioned) {
+		require.NoError(t, database.MigrateUp(context.Background(), cfg, migrationDir), "迁移数据库失败")
+		return
+	}
+	require.NoError(t, baselineErr, "基线迁移失败")
+}
+
+// ensureDatabaseExists 通过 postgres 维护库检查/创建目标库,避免碰触开发库数据。
+func ensureDatabaseExists(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	maintenance := *cfg
+	maintenance.DBName = "postgres"
+	admin, err := database.New(&maintenance)
+	if err != nil {
+		t.Skipf("集成环境未就绪(先 `make up` 启动 Postgres/Redis): %v", err)
+	}
+	defer closeDB(admin)
+	var exists bool
+	require.NoError(t, admin.Raw(
+		"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)", cfg.DBName).Scan(&exists).Error)
+	if exists {
+		return
+	}
+	require.NoError(t, admin.Exec("CREATE DATABASE "+quoteIdent(cfg.DBName)).Error, "创建测试库失败")
 }
 
 // resetData 清空业务表与 Redis(每个测试独立数据起点),并重建任务类型内置种子。
@@ -161,10 +203,16 @@ func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
 // ---- 业务助手 ----
 
 // seedInvite 直接向 DB 插入邀请码(管理端尚未实现,集成测试用)。
+// invite_codes.created_by 有指向 users 的外键,先确保占位用户存在
+// (迁移建库会带 FK,旧 AutoMigrate 库没有,这里统一补齐)。
 func seedInvite(t *testing.T, code string) {
 	t.Helper()
 	db := connectDB(t)
 	defer closeDB(db)
+	require.NoError(t, db.Exec(
+		`INSERT INTO users (id, username, display_name, password_hash, role)
+		 VALUES ('00000000-0000-0000-0000-000000000000', 'system_placeholder', 'System Placeholder', 'x', 'admin')
+		 ON CONFLICT DO NOTHING`).Error, "创建占位用户失败")
 	require.NoError(t, db.Exec(
 		"INSERT INTO invite_codes (id, code, created_by) VALUES (gen_random_uuid(), ?, '00000000-0000-0000-0000-000000000000')",
 		code,
@@ -173,7 +221,7 @@ func seedInvite(t *testing.T, code string) {
 
 func connectDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := database.New(config.Load())
+	db, err := database.New(integrationConfig(t))
 	require.NoError(t, err)
 	return db
 }
