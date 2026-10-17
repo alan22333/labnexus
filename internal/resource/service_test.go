@@ -110,6 +110,7 @@ func (r *memTagRepo) ListByResourceIDs(_ context.Context, resourceIDs []string) 
 type memResourceRepo struct {
 	byID      map[string]*resource.Resource
 	resTags   map[string][]string
+	favorites map[string]map[string]bool
 	deleteErr error
 }
 

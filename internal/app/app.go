@@ -78,10 +78,10 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	resRepo := resource.NewGormRepository(db)
 	resSvc := resource.NewService(
-		resource.NewGormRepository(db),
-		tagRepo, fileStore, users,
-	).WithTxRunner(database.GormTxRunner(db))
+		resRepo, tagRepo, fileStore, users,
+	).WithTxRunner(database.GormTxRunner(db)).WithCategoryRepository(resRepo)
 	resHandler := resource.NewHandler(resSvc)
 	docSvc.WithResourceByTag(resSvc.ListByTag)
 
@@ -92,7 +92,9 @@ func Build(cfg *config.Config) (*gin.Engine, error) {
 	projectHandler := project.NewHandler(projectSvc)
 
 	// 管理后台(Admin Console):仅 admin;聚合 users/invites + project 任务类型管理
-	adminSvc := admin.NewService(users, invites, projectSvc).WithAuthorizer(authorizer)
+	adminSvc := admin.NewService(users, invites, projectSvc).
+		WithAuthorizer(authorizer).
+		WithResourceCategories(resSvc)
 	adminHandler := admin.NewHandler(adminSvc)
 
 	// 阶段 3:F10 经费管理(仅 admin/supervisor)

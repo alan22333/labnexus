@@ -13,6 +13,7 @@ import (
 
 	"labnexus/internal/authz"
 	"labnexus/internal/project"
+	"labnexus/internal/resource"
 	"labnexus/internal/user"
 )
 
@@ -43,12 +44,21 @@ type TaskTypeManager interface {
 	DeleteTaskType(ctx context.Context, id string) error
 }
 
+// ResourceCategoryManager 资源分类管理能力(由 resource.Service 实现;接口便于测试替身)。
+type ResourceCategoryManager interface {
+	ListCategories(ctx context.Context, includeInactive bool) ([]*resource.ResourceCategory, error)
+	CreateCategory(ctx context.Context, name string, sort *int) (*resource.ResourceCategory, error)
+	UpdateCategory(ctx context.Context, id string, req resource.UpdateCategoryRequest) (*resource.ResourceCategory, error)
+	DeleteCategory(ctx context.Context, id string) error
+}
+
 // Service 管理后台业务逻辑(依赖注入)。
 type Service struct {
-	users      user.Repository
-	invites    user.InviteRepository
-	taskTypes  TaskTypeManager
-	authorizer authz.Authorizer
+	users              user.Repository
+	invites            user.InviteRepository
+	taskTypes          TaskTypeManager
+	resourceCategories ResourceCategoryManager
+	authorizer         authz.Authorizer
 }
 
 // NewService 构造函数。
@@ -62,6 +72,12 @@ func NewService(users user.Repository, invites user.InviteRepository, taskTypes 
 // WithAuthorizer 注入统一授权器(应用装配使用;测试可注入可控替身)。
 func (s *Service) WithAuthorizer(a authz.Authorizer) *Service {
 	s.authorizer = a
+	return s
+}
+
+// WithResourceCategories 注入资源分类管理能力(应用装配使用;测试可注入替身)。
+func (s *Service) WithResourceCategories(m ResourceCategoryManager) *Service {
+	s.resourceCategories = m
 	return s
 }
 
@@ -210,6 +226,52 @@ func (s *Service) DeleteTaskType(ctx context.Context, actorID, id string) error 
 		return err
 	}
 	return s.taskTypes.DeleteTaskType(ctx, id)
+}
+
+// ---- 资源分类管理(委托 resource 域) ----
+
+// ListResourceCategories 分类列表(含停用;仅 admin)。
+func (s *Service) ListResourceCategories(ctx context.Context, actorID string, includeInactive bool) ([]*resource.ResourceCategory, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	if s.resourceCategories == nil {
+		return nil, resource.ErrCategoryNotFound
+	}
+	return s.resourceCategories.ListCategories(ctx, includeInactive)
+}
+
+// CreateResourceCategory 新建分类(仅 admin)。
+func (s *Service) CreateResourceCategory(ctx context.Context, actorID, name string, sort *int) (*resource.ResourceCategory, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	if s.resourceCategories == nil {
+		return nil, resource.ErrCategoryNotFound
+	}
+	return s.resourceCategories.CreateCategory(ctx, name, sort)
+}
+
+// UpdateResourceCategory 编辑分类(仅 admin)。
+func (s *Service) UpdateResourceCategory(ctx context.Context, actorID, id string, req resource.UpdateCategoryRequest) (*resource.ResourceCategory, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	if s.resourceCategories == nil {
+		return nil, resource.ErrCategoryNotFound
+	}
+	return s.resourceCategories.UpdateCategory(ctx, id, req)
+}
+
+// DeleteResourceCategory 删除分类,引用资源回退未分类(仅 admin)。
+func (s *Service) DeleteResourceCategory(ctx context.Context, actorID, id string) error {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return err
+	}
+	if s.resourceCategories == nil {
+		return resource.ErrCategoryNotFound
+	}
+	return s.resourceCategories.DeleteCategory(ctx, id)
 }
 
 // newInviteCode 生成随机邀请码:前缀 LN- + 8 位随机大写字母数字(便于口述/复制)。

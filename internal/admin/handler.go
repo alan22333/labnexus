@@ -9,6 +9,7 @@ import (
 
 	"labnexus/internal/middleware"
 	"labnexus/internal/project"
+	"labnexus/internal/resource"
 	"labnexus/internal/user"
 )
 
@@ -38,6 +39,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, secret string) {
 	authed.POST("/task-types", h.CreateTaskType)
 	authed.PATCH("/task-types/:id", h.UpdateTaskType)
 	authed.DELETE("/task-types/:id", h.DeleteTaskType)
+	// 资源分类
+	authed.GET("/resource-categories", h.ListResourceCategories)
+	authed.POST("/resource-categories", h.CreateResourceCategory)
+	authed.PATCH("/resource-categories/:id", h.UpdateResourceCategory)
+	authed.DELETE("/resource-categories/:id", h.DeleteResourceCategory)
 }
 
 func (h *Handler) userID(c *gin.Context) string {
@@ -156,6 +162,56 @@ func (h *Handler) DeleteTaskType(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// ---- 资源分类 ----
+
+func (h *Handler) ListResourceCategories(c *gin.Context) {
+	list, err := h.svc.ListResourceCategories(c.Request.Context(), h.userID(c), true)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"categories": list})
+}
+
+func (h *Handler) CreateResourceCategory(c *gin.Context) {
+	var req struct {
+		Name string `json:"name"`
+		Sort *int   `json:"sort"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "VALIDATION", "invalid request body")
+		return
+	}
+	cat, err := h.svc.CreateResourceCategory(c.Request.Context(), h.userID(c), req.Name, req.Sort)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"category": cat})
+}
+
+func (h *Handler) UpdateResourceCategory(c *gin.Context) {
+	var req resource.UpdateCategoryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "VALIDATION", "invalid request body")
+		return
+	}
+	cat, err := h.svc.UpdateResourceCategory(c.Request.Context(), h.userID(c), c.Param("id"), req)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"category": cat})
+}
+
+func (h *Handler) DeleteResourceCategory(c *gin.Context) {
+	if err := h.svc.DeleteResourceCategory(c.Request.Context(), h.userID(c), c.Param("id")); err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // ---- 错误映射 ----
 
 func respondServiceError(c *gin.Context, err error) {
@@ -163,13 +219,15 @@ func respondServiceError(c *gin.Context, err error) {
 	case errors.Is(err, ErrForbidden):
 		respondError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
 	case errors.Is(err, ErrUserNotFound), errors.Is(err, user.ErrNotFound),
-		errors.Is(err, ErrInviteNotFound), errors.Is(err, project.ErrTaskTypeNotFound):
+		errors.Is(err, ErrInviteNotFound), errors.Is(err, project.ErrTaskTypeNotFound),
+		errors.Is(err, resource.ErrCategoryNotFound):
 		respondError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, ErrCannotSelfDemote), errors.Is(err, ErrLastAdmin),
-		errors.Is(err, ErrInvalidRole), errors.Is(err, ErrInviteEmpty):
+		errors.Is(err, ErrInvalidRole), errors.Is(err, ErrInviteEmpty),
+		errors.Is(err, resource.ErrCategoryNameEmpty), errors.Is(err, resource.ErrInvalidCategory):
 		respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())
 	case errors.Is(err, ErrInviteExists), errors.Is(err, project.ErrTaskTypeExists),
-		errors.Is(err, project.ErrTaskTypeNameEmpty):
+		errors.Is(err, project.ErrTaskTypeNameEmpty), errors.Is(err, resource.ErrCategoryExists):
 		// 重名/重码 → 409;名称空 → 400
 		if errors.Is(err, project.ErrTaskTypeNameEmpty) {
 			respondError(c, http.StatusBadRequest, "VALIDATION", err.Error())

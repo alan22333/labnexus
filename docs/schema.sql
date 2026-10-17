@@ -116,23 +116,48 @@ CREATE TABLE invite_codes (
 
 -- ===================== 阶段 2:资源库 + 项目任务 =====================
 
+-- 资源分类字典(课题组级;管理员维护;与自由标签互补,见 specs/resource-library-v2.md §2)
+CREATE TABLE resource_categories (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       VARCHAR(50) NOT NULL UNIQUE,
+    sort       INT NOT NULL DEFAULT 0,
+    builtin    BOOLEAN NOT NULL DEFAULT FALSE,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 资源(链接 / 文件)
 CREATE TABLE resources (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type          VARCHAR(20) NOT NULL,  -- link / file
-    title         VARCHAR(300) NOT NULL,
-    description   TEXT NOT NULL DEFAULT '', -- 资源说明/用途/备注
-    url           VARCHAR(500),          -- link 类型:外部链接(仅 http/https)
-    file_path     VARCHAR(500),          -- file 类型:本地存储路径
-    original_name VARCHAR(255),          -- file 类型:用户上传的原始文件名
-    mime_type     VARCHAR(100),          -- file 类型:检测到的 MIME
-    file_size     BIGINT,                -- file 类型:字节数
-    uploader_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type           VARCHAR(20) NOT NULL,  -- link / file
+    title          VARCHAR(300) NOT NULL,
+    description    TEXT NOT NULL DEFAULT '', -- 资源说明/用途/备注
+    url            VARCHAR(500),          -- link 类型:外部链接(仅 http/https)
+    file_path      VARCHAR(500),          -- file 类型:本地存储路径
+    original_name  VARCHAR(255),          -- file 类型:用户上传的原始文件名
+    mime_type      VARCHAR(100),          -- file 类型:检测到的 MIME
+    file_size      BIGINT,                -- file 类型:字节数
+    category_id    UUID REFERENCES resource_categories(id) ON DELETE SET NULL, -- 至多一个分类
+    pinned         BOOLEAN NOT NULL DEFAULT FALSE, -- 置顶/精选
+    view_count     BIGINT NOT NULL DEFAULT 0,      -- 浏览计数
+    download_count BIGINT NOT NULL DEFAULT 0,      -- 下载计数
+    uploader_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_resources_type ON resources(type);
 CREATE INDEX idx_resources_uploader ON resources(uploader_id);
+CREATE INDEX idx_resources_category ON resources(category_id);
+CREATE INDEX idx_resources_pinned ON resources(pinned);
+
+-- 资源收藏(个人维度;不影响全组可见性)
+CREATE TABLE resource_favorites (
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    resource_id UUID NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, resource_id)
+);
+CREATE INDEX idx_resource_favorites_resource ON resource_favorites(resource_id);
 
 -- 资源-标签(多对多)
 CREATE TABLE resource_tags (

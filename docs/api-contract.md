@@ -79,24 +79,29 @@
 |---|---|---|---|---|
 | GET | `/search` | 🔐 | query:`q, type?(document\|resource\|task)` | `{documents: [], resources: [], tasks: []}` |
 
-MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
+MVP 为数据库 LIKE(资源关键词跨标题/描述/文件名/URL/标签名,见 §F7);全文搜索升级见灵感库 F14。
 
 ## 阶段 2:F7~F9(资源库 + 项目任务)
 
 ### F7 资源库
 
 资源类型:仅 `link` / `file`。论文以 PDF 形式作为 `file` 上传(`paper` 类型与 DOI/arXiv 抓取已废弃,见规格 f8-paper-meta.md,重做后再引入)。
+v2(见 specs/resource-library-v2.md):新增分类字典、置顶、浏览/下载计数、个人收藏、跨字段检索与排序。
 
 | 方法 | 路径 | 权限 | 请求体 | 响应 |
 |---|---|---|---|---|
-| GET | `/resources` | 🔐 | query:`type?(link\|file), tag_id?, keyword?, page, page_size` | `{resources: [], pagination}` |
-| POST | `/resources` | 🔐 | `{type: link, title, url, description?, tag_ids?}` | `201 {resource}` |
-| POST | `/resources/upload` | 🔐 | multipart:`file, title?, description?, tag_ids?` | `201 {resource}` |
+| GET | `/resources` | 🔐 | query:`type?, keyword?, tag_ids?, category_id?, uncategorized?, uploader_id?, mine?, favorited?, pinned?, sort?, page, page_size` | `{resources: [], pagination}` |
+| POST | `/resources` | 🔐 | `{type: link, title, url, description?, category_id?, tag_ids?, force?}` | `201 {resource}`;URL 重复 → `409 CONFLICT` |
+| POST | `/resources/upload` | 🔐 | multipart:`file, title?, description?, category_id?, tag_ids?` | `201 {resource}` |
 | GET | `/resources/:id` | 🔐 | — | `{resource}` |
-| GET | `/resources/:id/download` | 🔐 | — | 文件流(`attachment`,仅 file) |
+| POST | `/resources/:id/view` | 🔐 | — | `204`(view_count + 1) |
+| GET | `/resources/:id/download` | 🔐 | — | 文件流(`attachment`,仅 file;download_count + 1) |
 | GET | `/resources/:id/preview` | 🔐 | — | 文件流(`inline`,仅 file 且支持预览) |
-| PATCH | `/resources/:id` | ✍️或👑 | `{title?, description?, tag_ids?}` | `{resource}` |
+| PATCH | `/resources/:id` | ✍️或👑 | `{title?, description?, category_id?, pinned?, tag_ids?}` | `{resource}` |
 | DELETE | `/resources/:id` | ✍️或👑 | — | `204` |
+| POST | `/resources/:id/favorite` | 🔐 | — | `204`(收藏,幂等) |
+| DELETE | `/resources/:id/favorite` | 🔐 | — | `204`(取消收藏,幂等) |
+| GET | `/resource-categories` | 🔐 | — | `{categories: []}`(active 分类字典) |
 
 `resource` 结构:
 
@@ -107,17 +112,28 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
   "original_name": "...",   // 仅 file
   "mime_type": "...",       // 仅 file,如 application/pdf
   "file_size": 12345,       // 仅 file,单位 byte
+  "category": {"id": "...", "name": "文献"},   // 可空 → null
+  "pinned": false,          // 置顶
+  "view_count": 12,         // 浏览计数
+  "download_count": 3,      // 下载计数
+  "favorited": true,        // 当前请求用户是否已收藏
   "preview": {"supported": true, "type": "pdf", "url": "/api/resources/:id/preview"},
   "download_url": "/api/resources/:id/download",
-  "uploader": {"id": "...", "display_name": "..."}, "tags": [], 
+  "uploader": {"id": "...", "display_name": "..."}, "tags": [],
   "created_at": "...", "updated_at": "..."
 }
 ```
 
 - `url` 校验:仅允许 `http://` / `https://` 且可解析,否则 400 `VALIDATION`;
+- **链接去重**:`POST /resources` 若存在完全相同 `url` → `409 CONFLICT`(错误体含 `existing_id`);请求体 `force: true` 跳过去重;
 - 文件上传:扩展名白名单 + 内容 MIME 双校验;大小上限:普通文件 50MB、视频(mp4/webm)100MB,超限 400 `VALIDATION`;
-- 预览支持:`pdf` / 图片(`png/jpg/jpeg/webp/gif`) / 文本(`txt/md`) / 视频(`mp4/webm`);Word/PPT/Excel/压缩包仅下载,预览返回 400 `PREVIEW_UNSUPPORTED`;
-- 下载/预览仅 `file` 类型;`link` 调用返回 400 `VALIDATION`;任意登录用户可用(资源共享)。
+- 预览支持:`pdf` / 图片(`png/jpg/jpeg/webp/gif`) / 文本(`txt/md`) / 视频(`mp4/webm`) / **表格(`xlsx/xls`,返回 octet-stream,前端解析渲染)**;Word/PPT/压缩包仅下载,预览返回 400 `PREVIEW_UNSUPPORTED`;
+- `md` 预览服务端返回 `text/plain`(防注入),前端按 Markdown 渲染;
+- 下载/预览仅 `file` 类型;`link` 调用返回 400 `VALIDATION`;任意登录用户可用(资源共享);
+- **筛选语义**:`keyword` 跨 `title/description/original_name/url/标签名` 匹配;`tag_ids` 逗号分隔且多标签为 AND;`uncategorized=true` 筛未分类;`mine=true` 等价 `uploader_id=<当前用户>`;`favorited=true` 只看本人收藏;
+- **排序**:`sort` ∈ `latest`(默认)|`oldest`|`title`|`size`|`useful`;任意排序下 `pinned` 均置顶;非法 sort → 400;
+- **计数**:`view` 端点与下载各自累加,尽力而为(失败不阻断);
+- **权限**:置顶 `pinned` 仅上传者或 admin 可改,他人 403。
 
 ### F9 项目与任务
 
@@ -256,6 +272,19 @@ MVP 为数据库 LIKE;全文搜索升级见灵感库 F14。
 - 同名创建/改名 → 409 `CONFLICT`。
 - 删除(内置与自建均可):事务内删类型 + 引用该类型的任务 `type_id` 置空(回退未分类)。
 - 公开只读 `GET /task-types`(F9)仍只返回 active;任务视图展示用全量字典,停用类型旧任务仍显示原名。
+
+### 资源分类管理
+
+| 方法 | 路径 | 权限 | 请求体 | 响应 |
+|---|---|---|---|---|
+| GET | `/admin/resource-categories` | 👑 | — | `{categories: []}`(含停用) |
+| POST | `/admin/resource-categories` | 👑 | `{name, sort?}` | `201 {category}` |
+| PATCH | `/admin/resource-categories/:id` | 👑 | `{name?, sort?, active?}` | `{category}` |
+| DELETE | `/admin/resource-categories/:id` | 👑 | — | `204` |
+
+- 依据 specs/resource-library-v2.md §3.2;同名创建/改名 → 409 `CONFLICT`;空名 → 400 `VALIDATION`。
+- 删除:引用该分类的资源 `category_id` 置空(回退未分类),不删除资源。
+- 公开只读 `GET /resource-categories`(F7)只返回 active;资源视图展示用分类名。
 
 ## 待定/备注
 
