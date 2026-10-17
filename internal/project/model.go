@@ -282,8 +282,10 @@ func (r *GormRepository) GetMember(ctx context.Context, projectID, userID string
 
 func (r *GormRepository) ListMembers(ctx context.Context, projectID string) ([]*ProjectMember, error) {
 	var list []*ProjectMember
+	// 稳定排序:负责人在前,其余按 user_id;避免无序返回导致前端/契约测试不稳定。
 	err := database.TxFromContext(ctx, r.db).WithContext(ctx).
-		Where("project_id = ?", projectID).Find(&list).Error
+		Where("project_id = ?", projectID).
+		Order("role = 'owner' DESC, user_id ASC").Find(&list).Error
 	return list, err
 }
 
