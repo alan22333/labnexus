@@ -49,6 +49,7 @@
   (见 `docs/specs/database-migration-backup.md`);
 - ✅ **正式前端 `/admin` + F9 v2 对接完成**(2026-10-15,labnexus-frontend):管理后台三 tab、邀请码注册链接预填、
   任务类型下拉/进度统计/成员候选等 F9 v2 字段已接通;
+- ✅ **开发演示数据 + 测试库隔离**(2026-10-16):空库启动自动补种高保真数据,`make seed-demo` 可随时重建;集成测试改用独立 `labnexus_test` 数据库,不再清空开发库 `labnexus`;
 - ▶️ **当前重点**:产品侧继续从学生/导师视角梳理灵感库新需求(讨论中);后端稳定化路线见 `docs/backend-roadmap.md`;
 - ⏸️ **灵感库暂缓**:除非触发条件满足且经人工确认，否则不进入开发(清单见 product-context §2 / 外部 PRD §4.4)。
 

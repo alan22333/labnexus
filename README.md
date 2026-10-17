@@ -67,6 +67,19 @@ curl http://localhost:8080/api/health   # 3. 应返回 {"status":"ok","db":true}
 
 浏览器打开 **http://localhost:8080** 即可使用。
 
+### 演示数据(重启后仍可用)
+
+开发环境启动时,如果数据库里还没有用户,会自动写入一套覆盖信息流、资源库、项目和经费的演示数据;
+重启服务不会清空数据,也不会重复写入。需要恢复初始演示内容时执行:
+
+```bash
+make seed-demo   # 清空业务表并重建演示数据(仅开发/演示环境使用)
+make demo        # 启动容器 + 重建演示数据 + 启动后端
+```
+
+固定演示账号:`test_admin / Test@123456`(admin)、`supervisor / Demo@123456`(导师)、
+`student1`~`student4 / Demo@123456`(学生)。设置 `DEMO_SEED=false` 可关闭空库自动补种。
+
 ### 生成邀请码
 
 管理后台前后端均已实现:admin 登录正式前端后进入 `/admin` 页生成邀请码(自动或自定义)、
@@ -91,6 +104,7 @@ docker exec labnexus-postgres psql -U labnexus -d labnexus -c \
 | `APP_ENV` | development | 运行环境;`production` 时开启测试后门将拒绝启动 |
 | `AUTHZ_TEST_BYPASS` | false | **仅测试用**权限后门;默认关闭,只绕过授权不绕过 JWT 认证 |
 | `MIGRATIONS_DIR` | migrations | SQL 版本化迁移目录 |
+| `DEMO_SEED` | true | 开发环境空库自动补种演示数据;`production` 恒不启用 |
 
 ---
 
@@ -151,7 +165,9 @@ make restore FILE=backups/xxx.tar.gz CONFIRM=yes # 校验完整后恢复数据�
 | 前端 E2E | `node scripts/e2e-frontend.mjs` | mock DOM + 真实 API 全流程(注册→发帖→点赞→评论→空间→资源→项目→标签→搜索) |
 | 前端诊断 | `node scripts/diag-frontend.mjs` | node mock 环境定位前端运行时错误 |
 | 冒烟脚本 | `./scripts/smoke-*.sh` ×6 | auth/space/doc/resource/project/finance 每功能手动冒烟 |
-| 测试管理员 | `make seed-admin` | **固定账号 test_admin / Test@123456**(admin)。集成测试/清库会清空 users,跑一次即恢复 |
+| 演示数据 | `make seed-demo` | 清空业务表并重建覆盖 F1~F10 的高保真数据;开发环境空库启动时也会自动补种 |
+| 测试管理员 | `make seed-admin` | 只创建 **test_admin / Test@123456**(admin);完整体验请用 `make seed-demo` |
+| 测试库隔离 | `make test-integration` | 集成测试使用独立 `labnexus_test` 数据库,不会再清空开发库 `labnexus` |
 | **人工验收** | [`docs/manual-acceptance.md`](docs/manual-acceptance.md) | 给导师/组员用的逐步操作清单 |
 
 ---
@@ -209,6 +225,7 @@ docs(README): rewrite for collaboration
 ```
 labnexus/
 ├── cmd/server/            # 入口(极薄,只调 app.Build)
+├── cmd/seed-demo/         # 开发/演示数据重建命令
 ├── internal/
 │   ├── app/               # 装配:连库/迁移/依赖注入/路由(测试与生产共用)
 │   ├── auth/ user/        # F1 账号
@@ -219,6 +236,7 @@ labnexus/
 │   ├── finance/           # F10 经费管理(批次/明细/上交/资金池)
 │   ├── authz/             # Casbin 统一权限决策(RBAC+ABAC)
 │   ├── admin/             # Admin Console 后端(成员/邀请码/任务类型)
+│   ├── demo/              # 确定性演示数据种子
 │   ├── cache/ token/ middleware/ database/ config/   # 基础设施
 ├── web/                   # 前端外壳(纯 HTML/JS,后端托管)
 ├── test/integration/      # 集成测试(build tag: integration)
@@ -232,7 +250,7 @@ labnexus/
 │   ├── backend-roadmap.md # 后端稳定化与后续路线
 │   └── product-context.md # 产品上下文(自包含)
 ├── scripts/               # check.sh + 冒烟 ×6 + 前端 diag/e2e
-├── Makefile               # up/down/run/build/test/test-integration/lint/check
+├── Makefile               # up/down/run/demo/test/test-integration/lint/check
 ├── AGENTS.md              # AI 接手指南(自动读取)
 └── docker-compose.yml     # Postgres(5433)+ Redis(6380)
 ```
@@ -278,8 +296,10 @@ labnexus/
 **Q: 访问页面没反应?**
 先 `curl http://localhost:8080/api/health` 确认服务;前端改动后请**硬刷新**(Cmd/Ctrl+Shift+R)清缓存。
 
-**Q: 如何重置数据库?**
-`docker compose down && docker compose up -d` 会清空卷重建;或 `docker exec labnexus-postgres psql -U labnexus -d labnexus -c "TRUNCATE ..."`。
+**Q: 如何重置开发数据库?**
+`make down` 只停止容器,数据卷会保留,下次启动数据仍在。要彻底删除本地数据卷可执行
+`docker compose down -v && make up`;空库启动后会自动补种演示数据。只想重置业务内容时执行 `make seed-demo`。
+集成测试使用独立的 `labnexus_test` 数据库,不会影响开发库。
 
 **Q: 集成测试跳过了?**
 `make test-integration` 需要 `make up` 后容器健康;未就绪时用例自动 skip(不阻塞 `make check`)。
