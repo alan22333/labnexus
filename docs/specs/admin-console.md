@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | ✅ 后端已实现并测试(2026-09);⚠️ 前端 `/admin` 页待 labnexus-frontend 实现(见 §8) |
+| 状态 | ✅ 后端已实现并测试(2026-09);前端 `/admin` 已由 labnexus-frontend 实现并验收(2026-10-15,见 §8) |
 | 关联 PRD | §3.1 角色设计、§3.2 管理端、§3.3 权限矩阵;F1 邀请码/成员管理 |
 | 关联契约 | api-contract.md §管理端(已落地实现) |
 | 涉及表 | users, invite_codes, task_types(均已有,无 schema 变更) |

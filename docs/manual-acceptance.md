@@ -18,11 +18,9 @@ make run            # 访问 http://localhost:8080
 # 3. 健康检查(应返回 {"status":"ok","db":true})
 curl http://localhost:8080/api/health
 
-# 4. 生成两个邀请码(管理端未实现,直接用 SQL 插入)
-docker exec labnexus-postgres psql -U labnexus -d labnexus -c \
-  "INSERT INTO invite_codes (id, code, created_by) VALUES
-   (gen_random_uuid(),'ACCEPT-A','00000000-0000-0000-0000-000000000000'),
-   (gen_random_uuid(),'ACCEPT-B','00000000-0000-0000-0000-000000000000');"
+# 4. 用 admin 登录正式前端(默认演示账号 test_admin / Test@123456),进入「管理」→「邀请码」
+#    生成两个自定义邀请码:ACCEPT-A、ACCEPT-B。
+#    API 备选:POST /api/admin/invites,body {"code":"ACCEPT-A"} / {"code":"ACCEPT-B"}。
 ```
 
 > 说明:以下步骤默认通过**浏览器界面**操作;关键步骤同时给出 **API 备选命令**(便于核对)。

@@ -50,7 +50,11 @@
 - ✅ **正式前端 `/admin` + F9 v2 对接完成**(2026-10-15,labnexus-frontend):管理后台三 tab、邀请码注册链接预填、
   任务类型下拉/进度统计/成员候选等 F9 v2 字段已接通;
 - ✅ **开发演示数据 + 测试库隔离**(2026-10-16):空库启动自动补种高保真数据,`make seed-demo` 可随时重建;集成测试改用独立 `labnexus_test` 数据库,不再清空开发库 `labnexus`;
-- ▶️ **当前重点**:产品侧继续从学生/导师视角梳理灵感库新需求(讨论中);后端稳定化路线见 `docs/backend-roadmap.md`;
+- ✅ **Research Scout 集成验收**(2026-10-27):独立 Scout 服务通过 LabNexus Bearer JWT 识别账号,每人独立 workspace;
+  `/scout` 概览、Zotero 连接管理、项目/scope 与会话 Brief 已接真实服务;真实账号/API/浏览器链路、
+  跨账号隔离和 401 refresh-and-replay 已验收(见 `docs/specs/research-assistant.md`)。真实 Zotero OAuth
+  浏览器授权仍需部署方 client key/secret 与人工验收,不得将 fixture 验收表述为真实 Zotero 同步;
+- ▶️ **当前重点**:Research Scout 真实 OAuth/部署验收与后端 A3 稳定化;产品侧灵感库新需求仍仅讨论,不进入开发;
 - ⏸️ **灵感库暂缓**:除非触发条件满足且经人工确认，否则不进入开发(清单见 product-context §2 / 外部 PRD §4.4)。
 
 ## 铁律(违反即"跑偏",禁止)

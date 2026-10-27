@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 状态 | 开发中(2026-10-17) |
+| 状态 | 已实现(后端 2026-10-17;正式前端已对接) |
 | 关联 PRD | §4.3 F7(资源库) |
 | 关联契约 | api-contract.md §F7(本规格随契约同步更新) |
 | 涉及表 | resources(改), resource_tags(不变), **resource_categories(新增)**, **resource_favorites(新增)** |
@@ -124,18 +124,18 @@ DELETE /api/admin/resource-categories/:id  → 204
 
 ## 5. 验收标准(可测清单)
 
-- [ ] keyword 命中 title / description / original_name / url / 标签名(任一即命中)
-- [ ] `tag_ids` 多标签 AND:资源需同时具备全部标签;单标签行为与旧 `tag_id` 一致
-- [ ] `sort` 五种取值结果正确;`pinned` 在任意排序下均置顶
-- [ ] `mine=true` 只返回当前用户上传的;`favorited=true` 只返回我收藏的
-- [ ] `uncategorized=true` 只返回 `category_id IS NULL` 的资源
-- [ ] 分类:非 admin 调 `/admin/resource-categories` → 403;空名 400;重名 409;删除后资源回退未分类
-- [ ] 置顶:上传者/admin 可置顶;他人 403
-- [ ] 计数:view 端点 204 且 view_count+1;下载一次 download_count+1;计数失败不影响下载
-- [ ] 收藏:收藏→`favorited=true`;取消→false;重复调用幂等;资源不存在 404
-- [ ] 去重:重复 URL → 409 且带 existing_id;`force:true` 可创建
-- [ ] 预览:`md` 前端渲染为 Markdown;`xlsx` 前端渲染为表格;docx 等仍 400 PREVIEW_UNSUPPORTED
-- [ ] 回归:既有 F7 用例(上传校验/权限/隔离删除)全绿
+- [x] keyword 命中 title / description / original_name / url / 标签名(任一即命中)
+- [x] `tag_ids` 多标签 AND:资源需同时具备全部标签;单标签行为与旧 `tag_id` 一致
+- [x] `sort` 五种取值结果正确;`pinned` 在任意排序下均置顶
+- [x] `mine=true` 只返回当前用户上传的;`favorited=true` 只返回我收藏的
+- [x] `uncategorized=true` 只返回 `category_id IS NULL` 的资源
+- [x] 分类:非 admin 调 `/admin/resource-categories` → 403;空名 400;重名 409;删除后资源回退未分类
+- [x] 置顶:上传者/admin 可置顶;他人 403
+- [x] 计数:view 端点 204 且 view_count+1;下载一次 download_count+1;计数失败不影响下载
+- [x] 收藏:收藏→`favorited=true`;取消→false;重复调用幂等;资源不存在 404
+- [x] 去重:重复 URL → 409 且带 existing_id;`force:true` 可创建
+- [x] 预览:`md` 前端渲染为 Markdown;`xlsx` 前端渲染为表格;docx 等仍 400 PREVIEW_UNSUPPORTED
+- [x] 回归:既有 F7 用例(上传校验/权限/隔离删除)全绿
 
 ## 6. 边界与异常
 
@@ -155,6 +155,7 @@ DELETE /api/admin/resource-categories/:id  → 204
 
 ## 8. 评审记录
 
-- [ ] 规格评审(待)
-- [ ] 契约已同步
-- [ ] schema.sql 已同步 + 迁移已加
+- [x] 规格评审(2026-10-17)
+- [x] 契约已同步
+- [x] schema.sql 已同步 + 迁移已加
+- [x] 后端单元/handler/集成测试与正式前端对接完成

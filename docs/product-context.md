@@ -31,7 +31,8 @@
 | F8 | 文献元数据:DOI/arXiv 自动抓取(**已废弃,重做后再引入**) | — | — |
 | F9 | 项目/任务:看板 + 状态机 + 里程碑(+ v2:任务类型字典/进度统计/候选下拉) | P1 | 2 |
 | F10 | 经费管理:周转批次/明细/上交/资金池(仅 admin+导师可见,PRD-经费管理.md) | P0 | 3 |
-| A1 | **管理后台 Admin Console**(后端✅ / 前端待做):成员管理(列表/搜索/改角色,防锁死)、邀请码管理(生成/列表/撤销)、任务类型管理(CRUD/停用/删除)。仅 admin 可调 `/api/admin/*`;需求 specs/admin-console.md,契约 §管理端,前端 `/admin` 单页三 tab 待 labnexus-frontend 实现 | P0 | 4 |
+| A1 | **管理后台 Admin Console**(后端✅ / 前端✅):成员管理(列表/搜索/改角色,防锁死)、邀请码管理(生成/列表/撤销)、任务类型管理(CRUD/停用/删除)。仅 admin 可调 `/api/admin/*`;需求 specs/admin-console.md,契约 §管理端,前端 `/admin` 三 tab 已由 labnexus-frontend 实现(2026-10-15) | P0 | 4 |
+| S1 | **Research Scout 调研助手**(独立服务):LabNexus Bearer JWT 身份桥、每人独立 workspace、Zotero 只读连接、项目/scope、带证据 Brief 与导出。正式前端 `/scout` 已接入;真实 Zotero OAuth 浏览器授权待部署方人工验收。规格见 specs/research-assistant.md | P1 | 3.6 |
 
 ### 灵感库(暂不实现)
 
@@ -60,7 +61,7 @@
 | D3 | 不设访客/只读角色 | 纯内部平台 |
 | D4 | 模块化单体,不做微服务 | 10 人规模,1 人开发 |
 | D5 | P0 = 社区四件套+标签+搜索 | 先让社区活 |
-| D6 | 灵感库(外部 PRD §4.4,含 2026-09 新增 阅读清单/打卡/组会排期/学生档案)暂缓,开发目标仅 F1~F10 + 管理后台(A1) | 聚焦 |
+| D6 | 灵感库(外部 PRD §4.4,含 2026-09 新增 阅读清单/打卡/组会排期/学生档案)暂缓,开发目标仅 F1~F10 + 管理后台(A1) + 独立 Research Scout 集成(S1) | 聚焦 |
 | D7 | Go+Gin+GORM+JWT(Redis refresh)/React+Vite+Tailwind+**shadcn/ui**(正式前端独立仓库 labnexus-frontend) | 用户熟悉 Go 栈 + AI Coding 友好;shadcn 与 Tailwind 零冲突、视觉现代、源码可定制(2026-08-25 定) |
 | D8 | 部署三阶段:本地→0 成本演示→国内服务器 | 先演示确认再投入 |
 | D9 | 引用格式默认 GB/T | 中国高校惯例 |
@@ -84,6 +85,7 @@
 | 阶段 2 | F7~F9 资源库 + 任务 | ✅ 已完成 |
 | 阶段 3 | F10 经费管理(批次/明细/Excel 导入/上交/资金池,仅 admin+导师) | ✅ 已完成 |
 | 阶段 3.5 | Admin Console(成员/邀请码/任务类型,仅 admin) | ✅ 后端 + 前端 `/admin`(labnexus-frontend,2026-10-15) |
+| 阶段 3.6 | Research Scout 独立服务与 LabNexus 身份/前端集成 | ✅ 真实 JWT/API/浏览器链路验收(2026-10-27);真实 Zotero OAuth 授权待人工 |
 | 阶段 4 | 迭代 + 导师参与(灵感库按触发条件捞回) | ⏳ 待启动 |
 
 ## 7. 文档索引
@@ -95,6 +97,6 @@
 | `docs/api-contract.md` | API 契约 v0.1(F1~F9 + 管理端) |
 | `docs/schema.sql` | 数据模型权威定义 |
 | `docs/specs/_template.md` | 功能规格模板 |
-| `docs/specs/` | 功能规格(F1~F10、Admin Console、前端外壳、Casbin 权限;f8 已废弃归档) |
+| `docs/specs/` | 功能规格(F1~F10、Admin Console、Research Scout、前端外壳、Casbin 权限;f8 已废弃归档) |
 | `docs/evaluations/` | 需求/技术评估记录(灵感库、ES、research-kb 接入等) |
 | `docs/backend-roadmap.md` | 后端稳定化与后续路线 |
